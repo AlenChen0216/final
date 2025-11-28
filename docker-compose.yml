@@ -1,0 +1,51 @@
+services:
+  H1:
+    image: nicolaka/netshoot:latest
+    container_name: H1
+    restart: always
+    command: tail -f /dev/null
+    privileged: true  # Often needed for network manipulation if doing it from inside, but here we do it from host.
+    network_mode: "none"
+
+  H2:
+    image: nicolaka/netshoot:latest
+    container_name: H2
+    restart: always
+    command: tail -f /dev/null
+    privileged: true
+    network_mode: "none"
+
+  H3:
+    image: nicolaka/netshoot:latest
+    container_name: H3
+    restart: always
+    command: tail -f /dev/null
+    privileged: true
+    network_mode: "none"
+
+  R2:
+    image: frrouting/frr-debian:latest
+    container_name: R2
+    restart: always
+    command:  tail -f /dev/null
+    privileged: true
+    network_mode: "none"
+
+  FRR:
+    image: frrouting/frr-debian:latest
+    container_name: FRR
+    restart: always
+    command: tail -f /dev/null
+    privileged: true
+    network_mode: "none"
+
+  ONOS:
+    image: onosproject/onos:2.7-latest
+    container_name: ONOS
+    restart: always
+    ports:
+      - "8181:8181"
+      - "6653:6653"
+      - "8101:8101"
+    privileged: true
+    network_mode: "none"

@@ -1,0 +1,43 @@
+{
+    "devices" : {
+        "of:0000000000000001" : {
+            "basic" : {
+                "driver" : "softrouter"
+            }
+        },
+        "of:0000000000000002":{
+            "basic" : {
+                "driver" : "softrouter"
+            }
+        }
+    },
+    "ports" : {
+        "of:0000000000000001/3" : {
+            "interfaces" : [
+                {
+                    "name" : "veth-r2",
+                    "ips"  : [ "192.168.63.1/24","172.16.23.1/24"],
+                    "mac"  : "00:00:00:00:00:04"
+                }
+            ]
+        },
+        "of:0000000000000001/1" : {
+            "interfaces" : [
+                {
+                    "name" : "patch-br2",
+                    "ips"  : [ "172.16.23.2/24"],
+                    "mac"  : "00:00:00:00:00:04"
+                }
+            ]
+        }
+    },
+    "apps" : {
+        "org.onosproject.router" : {
+            "router" : {
+                "controlPlaneConnectPoint" : "of:0000000000000001/4",
+                "ospfEnabled" : "false",
+                "interfaces" : [ "veth-r2", "patch-br2" ]
+            }
+        }
+    }
+}
