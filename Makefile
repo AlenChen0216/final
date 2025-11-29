@@ -1,29 +1,29 @@
-CONTAINERS := H1 H2 H3 R2 FRR ONOS
+CONTAINERS := H1 H3 H2 R2 FRR ONOS
 OVS_BRIDGE := ovs-br1 ovs-br2
-FILE_TO_COPY := config.txt
-DEST_DIR := /root/
+
+# You're ID for the lab.
+IP_SETTING := 23
 
 CONTAINER_TO_BRIDGE :=
-CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.23.2/24,2a0b:4e07:c4:23::2/64@veth-h1@00:00:00:00:00:01
-CONTAINER_TO_BRIDGE += H3@ovs-br1@172.16.23.3/24,2a0b:4e07:c4:23::3/64@veth-h3@00:00:00:00:00:03
+CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.$(IP_SETTING).2/24,2a0b:4e07:c4:$(IP_SETTING)::2/64@veth-h1@00:00:00:00:00:01
+CONTAINER_TO_BRIDGE += H2@ovs-br1@172.16.$(IP_SETTING).3/24,2a0b:4e07:c4:$(IP_SETTING)::3/64@veth-h2@00:00:00:00:00:03
 CONTAINER_TO_BRIDGE += R2@ovs-br1@192.168.63.2/24,fd63::2/64@veth-r2@00:00:00:00:00:02
-CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64,192.168.70.23/24,fd70::23/64,172.16.23.1/24,2a0b:4e07:c4:23::1/64@veth-frr@00:00:00:00:00:04
-CONTAINER_TO_BRIDGE += FRR@ovs-mgmt@192.168.100.3/24@veth-frr-m@00:00:00:00:00:05
-CONTAINER_TO_BRIDGE += ONOS@ovs-mgmt@192.168.100.2/24@veth-onos@00:00:00:00:00:06
+CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64,192.168.70.$(IP_SETTING)/24,fd70::$(IP_SETTING)/64,172.16.$(IP_SETTING).1/24,2a0b:4e07:c4:$(IP_SETTING)::69/64,192.168.100.3/24@veth-frr@00:00:00:00:00:04
+
 
 CONTAINER_TO_CONTAINER :=
-CONTAINER_TO_CONTAINER += H2@R2@172.17.23.2/24,2a0b:4e07:c4:123::2/64@172.17.23.1/24,2a0b:4e07:c4:123::1/64
+CONTAINER_TO_CONTAINER += H3@R2@172.17.$(IP_SETTING).2/24,2a0b:4e07:c4:1$(IP_SETTING)::2/64@172.17.$(IP_SETTING).1/24,2a0b:4e07:c4:1$(IP_SETTING)::1/64
 
 CONTAINER_DEFAULT_IF := 
-CONTAINER_DEFAULT_GW := H2:172.17.23.1 H1:172.16.23.1 H3:172.16.23.1
+CONTAINER_DEFAULT_GW := H3:172.17.$(IP_SETTING).1,2a0b:4e07:c4:1$(IP_SETTING)::1 H1:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 H2:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69
 
-.PHONY: all up down clean ovs-setup connect routes copy
+.PHONY: start
 
 # Default target: Do everything
 
 
 start: up config_frr ovs-setup connect routes setup_onos start_frr check
-
+	
 restart: reup config_frr ovs-setup connect routes setup_onos start_frr check
 
 # Start containers
@@ -38,14 +38,19 @@ down:
 	docker compose down
 
 # Clean up OVS bridge and containers
-clean: down
+stop: down
 	@for br in $(OVS_BRIDGE); do \
 		sudo ovs-vsctl --if-exists del-br $$br; \
 	done
 	sudo ovs-vsctl --if-exists del-br ovs-mgmt
+	sudo ip link delete veth-local 2>/dev/null || true
+	sudo wg-quick down wg0
 
 # Create Open vSwitch bridge
 ovs-setup:
+
+	sudo wg-quick up wg0
+
 	@for br in $(OVS_BRIDGE); do \
 		id=$${br#ovs-br}; \
 		dpid=$$(printf "00000000000000%02d" $$id); \
@@ -53,19 +58,29 @@ ovs-setup:
 		sudo ip link set $$br up; \
 	done
 
-	sudo ovs-vsctl --may-exist add-br ovs-mgmt
-	sudo ip link set ovs-mgmt mtu 1420
-	sudo ip link set ovs-mgmt up
-	sudo ip addr add 192.168.100.1/24 dev ovs-mgmt 2>/dev/null || true
-	sudo ovs-vsctl --may-exist add-port ovs-mgmt TO_TA -- set interface TO_TA type=vxlan options:remote_ip=192.168.60.23 -- set interface TO_TA mtu_request=1420
 
 	sudo ip link set ovs-br1 mtu 1420
+	sudo ip link set ovs-br2 mtu 1420
 	sudo ip link set ovs-br1 up
+	sudo ip link set ovs-br2 up
+
 	sudo ovs-vsctl --may-exist add-port ovs-br1 patch-br2 -- set interface patch-br2 type=patch options:peer=patch-br1
 	sudo ovs-vsctl --may-exist add-port ovs-br2 patch-br1 -- set interface patch-br1 type=patch options:peer=patch-br2
-	sudo ip link set ovs-br2 mtu 1420
+	
 
-	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.23 -- set interface TO_VXLAN mtu_request=1420
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=1420
+
+
+
+	sudo ip link add veth-local type veth peer name veth-peer
+
+	sudo ovs-vsctl --may-exist add-port ovs-br2 veth-local -- set interface veth-local mtu_request=1420
+
+	sudo ip link set up veth-local
+	sudo ip link set up veth-peer
+
+	sudo ip address add 192.168.100.2/24 dev veth-peer
+
 
 # Connect containers to OVS bridge via veth pairs
 connect:
@@ -125,13 +140,13 @@ connect:
 		CNAME1_SHORT=$$(echo $$c1 | cut -c1-5); \
 		CNAME2_SHORT=$$(echo $$c2 | cut -c1-5); \
 		VETH1="veth_$${CNAME1_SHORT}_$$SUFFIX"; \
-		VETH2="vpeer_$${CNAME2_SHORT}_$$SUFFIX"; \
+		VETH3="vpeer_$${CNAME2_SHORT}_$$SUFFIX"; \
 		sudo ip link delete $$VETH1 2>/dev/null || true; \
-		sudo ip link add $$VETH1 type veth peer name $$VETH2; \
+		sudo ip link add $$VETH1 type veth peer name $$VETH3; \
 		sudo ip link set $$VETH1 mtu 1420; \
-		sudo ip link set $$VETH2 mtu 1420; \
+		sudo ip link set $$VETH3 mtu 1420; \
 		sudo ip link set $$VETH1 netns $$PID1; \
-		sudo ip link set $$VETH2 netns $$PID2; \
+		sudo ip link set $$VETH3 netns $$PID2; \
 		ETH_ID=0; \
 		while sudo nsenter -t $$PID1 -n ip link show eth$$ETH_ID >/dev/null 2>&1; do ETH_ID=$$((ETH_ID+1)); done; \
 		IFACE1="eth$$ETH_ID"; \
@@ -141,7 +156,7 @@ connect:
 		ETH_ID=0; \
 		while sudo nsenter -t $$PID2 -n ip link show eth$$ETH_ID >/dev/null 2>&1; do ETH_ID=$$((ETH_ID+1)); done; \
 		IFACE2="eth$$ETH_ID"; \
-		sudo nsenter -t $$PID2 -n ip link set $$VETH2 name $$IFACE2; \
+		sudo nsenter -t $$PID2 -n ip link set $$VETH3 name $$IFACE2; \
 		sudo nsenter -t $$PID2 -n ip link set $$IFACE2 up; \
 		for ip in $$(echo $$ip2 | tr ',' ' '); do sudo nsenter -t $$PID2 -n ip addr add $$ip dev $$IFACE2; done; \
 		echo "Connected $$c1 ($$IFACE1) <-> $$c2 ($$IFACE2)"; \
@@ -169,14 +184,24 @@ routes:
 	done
 	@for mapping in $(CONTAINER_DEFAULT_GW); do \
 		container=$${mapping%%:*}; \
-		gw_ip=$${mapping#*:}; \
-		echo "Setting default route for $$container via $$gw_ip..."; \
+		gw_ips=$${mapping#*:}; \
+		echo "Setting default routes for $$container via $$gw_ips..."; \
 		PID=$$(docker inspect -f '{{.State.Pid}}' $$container); \
 		if [ -z "$$PID" ] || [ "$$PID" = "0" ]; then continue; fi; \
 		sudo nsenter -t $$PID -n ip route del default 2>/dev/null || true; \
-		sudo nsenter -t $$PID -n ip route add default via $$gw_ip; \
-		echo "Set default route for $$container via $$gw_ip"; \
+		sudo nsenter -t $$PID -n ip -6 route del default 2>/dev/null || true; \
+		for gw_ip in $$(echo $$gw_ips | tr ',' ' '); do \
+			if echo $$gw_ip | grep -q ':'; then \
+				sudo nsenter -t $$PID -n ip -6 route add default via $$gw_ip 2>/dev/null || true; \
+				echo "Set IPv6 default route for $$container via $$gw_ip"; \
+			else \
+				sudo nsenter -t $$PID -n ip route add default via $$gw_ip 2>/dev/null || true; \
+				echo "Set IPv4 default route for $$container via $$gw_ip"; \
+			fi; \
+		done; \
 	done
+
+
 
 # Copy files into containers
 copy:
@@ -205,24 +230,32 @@ setup_onos:
 
 	# use onos-app to setup
 	onos-app 192.168.100.2 activate org.onosproject.openflow
-	onos-app 192.168.100.2 activate org.onosproject.proxyarp
+# 	onos-app 192.168.100.2 activate org.onosproject.proxyarp
 	onos-app 192.168.100.2 activate org.onosproject.fpm
-	onos-app 192.168.100.2 activate org.onosproject.fwd
+# 	onos-app 192.168.100.2 activate org.onosproject.fwd
+	onos-app 192.168.100.2 install! ./bridge-app-1.0-SNAPSHOT.oar
+
+	onos-app 192.168.100.2 activate org.onosproject.route-service
 
 	# upload configurations
-	onos-netcfg 192.168.100.2 ./conf.json
-
-	onos-app 192.168.100.2 activate org.onosproject.vrouter
+# 	onos-netcfg 192.168.100.2 ./conf.json
+# 	onos-app 192.168.100.2 activate org.onosproject.vrouter
 	
 	
 config_frr:
 	docker exec -it FRR bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
+	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
+# 	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.accept_ra=2' >> /etc/sysctl.conf"
+
 	docker exec -it FRR bash -c "sysctl -p"
 	docker cp ./daemons FRR:/etc/frr/daemons
 	docker cp ./frr.conf FRR:/etc/frr/frr.conf
 	docker restart FRR
 
 	docker exec -it R2 bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
+# 	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.accept_ra=2' >> /etc/sysctl.conf"
+
 	docker exec -it R2 bash -c "sysctl -p"
 	docker cp ./daemons R2:/etc/frr/daemons
 	docker cp ./R2.conf R2:/etc/frr/frr.conf
