@@ -49,7 +49,12 @@ stop: down
 # Create Open vSwitch bridge
 ovs-setup:
 
-	sudo wg-quick up wg0
+	if ! sudo wg show wg0 >/dev/null 2>&1; then \
+		echo "Starting WireGuard interface wg0..."; \
+		sudo wg-quick up wg0; \
+	else \
+		echo "WireGuard interface wg0 is already running."; \
+	fi
 
 	@for br in $(OVS_BRIDGE); do \
 		id=$${br#ovs-br}; \
@@ -245,7 +250,7 @@ setup_onos:
 config_frr:
 	docker exec -it FRR bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
 	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
-# 	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.accept_ra=2' >> /etc/sysctl.conf"
+	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.disable_ipv6=0' >> /etc/sysctl.conf"
 
 	docker exec -it FRR bash -c "sysctl -p"
 	docker cp ./daemons FRR:/etc/frr/daemons
@@ -254,7 +259,7 @@ config_frr:
 
 	docker exec -it R2 bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
 	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
-# 	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.accept_ra=2' >> /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.disable_ipv6=0' >> /etc/sysctl.conf"
 
 	docker exec -it R2 bash -c "sysctl -p"
 	docker cp ./daemons R2:/etc/frr/daemons
