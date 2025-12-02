@@ -3,6 +3,8 @@ OVS_BRIDGE := ovs-br1 ovs-br2
 
 # You're ID for the lab.
 IP_SETTING := 23
+IP_SETTING2 := 22
+IP_SETTING3 := 24
 
 CONTAINER_TO_BRIDGE :=
 CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.$(IP_SETTING).2/24,2a0b:4e07:c4:$(IP_SETTING)::2/64@veth-h1@00:00:00:00:00:01
@@ -74,6 +76,8 @@ ovs-setup:
 	
 
 	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=1420
+	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=1420
+	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=1420
 
 
 
