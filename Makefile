@@ -6,11 +6,18 @@ IP_SETTING := 23
 IP_SETTING2 := 22
 IP_SETTING3 := 24
 
+# MTU setting for all interfaces
+MTU_SIZE := 1370
+
 CONTAINER_TO_BRIDGE :=
-CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.$(IP_SETTING).2/24,2a0b:4e07:c4:$(IP_SETTING)::2/64@veth-h1@00:00:00:00:00:01
-CONTAINER_TO_BRIDGE += H2@ovs-br1@172.16.$(IP_SETTING).3/24,2a0b:4e07:c4:$(IP_SETTING)::3/64@veth-h2@00:00:00:00:00:03
-CONTAINER_TO_BRIDGE += R2@ovs-br1@192.168.63.2/24,fd63::2/64@veth-r2@00:00:00:00:00:02
-CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64,192.168.70.$(IP_SETTING)/24,fd70::$(IP_SETTING)/64,172.16.$(IP_SETTING).1/24,2a0b:4e07:c4:$(IP_SETTING)::69/64,192.168.100.3/24@veth-frr@00:00:00:00:00:04
+CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.$(IP_SETTING).2/24,2a0b:4e07:c4:$(IP_SETTING)::2/64@veth-h1@00:00:$(IP_SETTING):00:00:01
+CONTAINER_TO_BRIDGE += H2@ovs-br1@172.16.$(IP_SETTING).3/24,2a0b:4e07:c4:$(IP_SETTING)::3/64@veth-h2@00:00:$(IP_SETTING):00:00:03
+CONTAINER_TO_BRIDGE += R2@ovs-br1@192.168.63.2/24,fd63::2/64@veth-r2@00:00:$(IP_SETTING):00:00:02
+
+CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64@veth-frr63@00:00:$(IP_SETTING):00:00:04
+CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.70.$(IP_SETTING)/24,fd70::$(IP_SETTING)/64@veth-frr70@00:00:$(IP_SETTING):00:00:05
+CONTAINER_TO_BRIDGE += FRR@ovs-br1@172.16.$(IP_SETTING).1/24,2a0b:4e07:c4:$(IP_SETTING)::69/64@veth-frr16@00:00:$(IP_SETTING):00:00:06
+CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.100.3/24@veth-frrmgmt@00:00:$(IP_SETTING):00:00:07
 
 
 CONTAINER_TO_CONTAINER :=
@@ -18,15 +25,18 @@ CONTAINER_TO_CONTAINER += H3@R2@172.17.$(IP_SETTING).2/24,2a0b:4e07:c4:1$(IP_SET
 
 CONTAINER_DEFAULT_IF := 
 CONTAINER_DEFAULT_GW := H3:172.17.$(IP_SETTING).1,2a0b:4e07:c4:1$(IP_SETTING)::1 H1:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 H2:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69
+CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 
-.PHONY: start
+# 0e:a7:1a:c5:29:15 , 192.168.70.253 's mac address
+
+.PHONY: start arp-setup
 
 # Default target: Do everything
 
 
-start: up config_frr ovs-setup connect routes setup_onos start_frr check
+start: up config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
 	
-restart: reup config_frr ovs-setup connect routes setup_onos start_frr check
+restart: reup config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
 
 # Start containers
 up:
@@ -66,8 +76,8 @@ ovs-setup:
 	done
 
 
-	sudo ip link set ovs-br1 mtu 1420
-	sudo ip link set ovs-br2 mtu 1420
+	sudo ip link set ovs-br1 mtu $(MTU_SIZE)
+	sudo ip link set ovs-br2 mtu $(MTU_SIZE)
 	sudo ip link set ovs-br1 up
 	sudo ip link set ovs-br2 up
 
@@ -75,15 +85,15 @@ ovs-setup:
 	sudo ovs-vsctl --may-exist add-port ovs-br2 patch-br1 -- set interface patch-br1 type=patch options:peer=patch-br2
 	
 
-	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=1420
-	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=1420
-	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=1420
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=$(MTU_SIZE)
 
 
 
 	sudo ip link add veth-local type veth peer name veth-peer
 
-	sudo ovs-vsctl --may-exist add-port ovs-br2 veth-local -- set interface veth-local mtu_request=1420
+	sudo ovs-vsctl --may-exist add-port ovs-br2 veth-local -- set interface veth-local mtu_request=$(MTU_SIZE)
 
 	sudo ip link set up veth-local
 	sudo ip link set up veth-peer
@@ -113,7 +123,7 @@ connect:
 		sudo ip link delete $$VETH_HOST 2>/dev/null || true; \
 		sudo ip link add $$VETH_HOST type veth peer name $$VETH_CONT; \
 		sudo ovs-vsctl --may-exist add-port $$bridge $$VETH_HOST; \
-		sudo ip link set $$VETH_HOST mtu 1420; \
+		sudo ip link set $$VETH_HOST mtu $(MTU_SIZE); \
 		sudo ip link set $$VETH_HOST up; \
 		sudo ip link set $$VETH_CONT netns $$PID; \
 		ETH_ID=0; \
@@ -122,7 +132,7 @@ connect:
 		done; \
 		IFACE_NAME="eth$$ETH_ID"; \
 		sudo nsenter -t $$PID -n ip link set $$VETH_CONT name $$IFACE_NAME; \
-		sudo nsenter -t $$PID -n ip link set $$IFACE_NAME mtu 1420; \
+		sudo nsenter -t $$PID -n ip link set $$IFACE_NAME mtu $(MTU_SIZE); \
 		sudo nsenter -t $$PID -n ip link set $$IFACE_NAME address $$mac_addr; \
 		sudo nsenter -t $$PID -n ip link set $$IFACE_NAME up; \
 		if [ "$$ip_addr" != "0" ]; then \
@@ -152,8 +162,8 @@ connect:
 		VETH3="vpeer_$${CNAME2_SHORT}_$$SUFFIX"; \
 		sudo ip link delete $$VETH1 2>/dev/null || true; \
 		sudo ip link add $$VETH1 type veth peer name $$VETH3; \
-		sudo ip link set $$VETH1 mtu 1420; \
-		sudo ip link set $$VETH3 mtu 1420; \
+		sudo ip link set $$VETH1 mtu $(MTU_SIZE); \
+		sudo ip link set $$VETH3 mtu $(MTU_SIZE); \
 		sudo ip link set $$VETH1 netns $$PID1; \
 		sudo ip link set $$VETH3 netns $$PID2; \
 		ETH_ID=0; \
@@ -210,7 +220,104 @@ routes:
 		done; \
 	done
 
-
+# Set up ARP entries for all containers
+arp-setup:
+	@# Extract IP and MAC mappings from CONTAINER_TO_BRIDGE
+	@for mapping in $(CONTAINER_TO_BRIDGE); do \
+		container=$${mapping%%@*}; \
+		rest=$${mapping#*@}; \
+		bridge=$${rest%%@*}; \
+		rest=$${rest#*@}; \
+		ip_addr=$${rest%%@*}; \
+		rest=$${rest#*@}; \
+		veth_host=$${rest%%@*}; \
+		mac_addr=$${rest#*@}; \
+		if [ "$$ip_addr" != "0" ]; then \
+			for ip in $$(echo $$ip_addr | tr ',' ' '); do \
+				clean_ip=$${ip%%/*}; \
+				if echo $$clean_ip | grep -q ':'; then \
+					echo "Processing IPv6: $$clean_ip -> $$mac_addr for $$container"; \
+				else \
+					echo "Processing IPv4: $$clean_ip -> $$mac_addr for $$container"; \
+				fi; \
+				for target_container in $(CONTAINERS); do \
+					if [ "$$target_container" != "$$container" ] && [ "$$target_container" != "ONOS" ]; then \
+						PID=$$(docker inspect -f '{{.State.Pid}}' $$target_container 2>/dev/null); \
+						if [ -n "$$PID" ] && [ "$$PID" != "0" ]; then \
+							if echo $$clean_ip | grep -q ':'; then \
+								sudo nsenter -t $$PID -n ip -6 neigh add $$clean_ip lladdr $$mac_addr dev eth0 2>/dev/null || \
+								sudo nsenter -t $$PID -n ip -6 neigh replace $$clean_ip lladdr $$mac_addr dev eth0 2>/dev/null || true; \
+								echo "Added IPv6 ARP entry in $$target_container: $$clean_ip -> $$mac_addr"; \
+							else \
+								sudo nsenter -t $$PID -n arp -s $$clean_ip $$mac_addr 2>/dev/null || \
+								sudo nsenter -t $$PID -n ip neigh add $$clean_ip lladdr $$mac_addr dev eth0 2>/dev/null || \
+								sudo nsenter -t $$PID -n ip neigh replace $$clean_ip lladdr $$mac_addr dev eth0 2>/dev/null || true; \
+								echo "Added IPv4 ARP entry in $$target_container: $$clean_ip -> $$mac_addr"; \
+							fi; \
+						fi; \
+					fi; \
+				done; \
+			done; \
+		fi; \
+	done
+	@# Extract IP and MAC mappings from CONTAINER_TO_CONTAINER 
+	@for mapping in $(CONTAINER_TO_CONTAINER); do \
+		c1=$${mapping%%@*}; \
+		rest=$${mapping#*@}; \
+		c2=$${rest%%@*}; \
+		rest=$${rest#*@}; \
+		ip1=$${rest%%@*}; \
+		ip2=$${rest#*@}; \
+		echo "Processing container-to-container mapping: $$c1 <-> $$c2"; \
+		PID1=$$(docker inspect -f '{{.State.Pid}}' $$c1 2>/dev/null); \
+		PID2=$$(docker inspect -f '{{.State.Pid}}' $$c2 2>/dev/null); \
+		if [ -n "$$PID1" ] && [ "$$PID1" != "0" ] && [ -n "$$PID2" ] && [ "$$PID2" != "0" ]; then \
+			for ip in $$(echo $$ip1 | tr ',' ' '); do \
+				clean_ip=$${ip%%/*}; \
+				MAC1=$$(sudo nsenter -t $$PID1 -n ip addr show | grep "$$clean_ip" -A1 | grep "link/ether" | awk '{print $$2}' | head -1); \
+				if [ -n "$$MAC1" ]; then \
+					for target_container in $(CONTAINERS); do \
+						if [ "$$target_container" != "$$c1" ] && [ "$$target_container" != "ONOS" ]; then \
+							TARGET_PID=$$(docker inspect -f '{{.State.Pid}}' $$target_container 2>/dev/null); \
+							if [ -n "$$TARGET_PID" ] && [ "$$TARGET_PID" != "0" ]; then \
+								if echo $$clean_ip | grep -q ':'; then \
+									sudo nsenter -t $$TARGET_PID -n ip -6 neigh add $$clean_ip lladdr $$MAC1 dev eth0 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip -6 neigh replace $$clean_ip lladdr $$MAC1 dev eth0 2>/dev/null || true; \
+								else \
+									sudo nsenter -t $$TARGET_PID -n arp -s $$clean_ip $$MAC1 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip neigh add $$clean_ip lladdr $$MAC1 dev eth0 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip neigh replace $$clean_ip lladdr $$MAC1 dev eth0 2>/dev/null || true; \
+								fi; \
+								echo "Added ARP entry in $$target_container: $$clean_ip -> $$MAC1 (from $$c1)"; \
+							fi; \
+						fi; \
+					done; \
+				fi; \
+			done; \
+			for ip in $$(echo $$ip2 | tr ',' ' '); do \
+				clean_ip=$${ip%%/*}; \
+				MAC2=$$(sudo nsenter -t $$PID2 -n ip addr show | grep "$$clean_ip" -A1 | grep "link/ether" | awk '{print $$2}' | head -1); \
+				if [ -n "$$MAC2" ]; then \
+					for target_container in $(CONTAINERS); do \
+						if [ "$$target_container" != "$$c2" ] && [ "$$target_container" != "ONOS" ]; then \
+							TARGET_PID=$$(docker inspect -f '{{.State.Pid}}' $$target_container 2>/dev/null); \
+							if [ -n "$$TARGET_PID" ] && [ "$$TARGET_PID" != "0" ]; then \
+								if echo $$clean_ip | grep -q ':'; then \
+									sudo nsenter -t $$TARGET_PID -n ip -6 neigh add $$clean_ip lladdr $$MAC2 dev eth0 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip -6 neigh replace $$clean_ip lladdr $$MAC2 dev eth0 2>/dev/null || true; \
+								else \
+									sudo nsenter -t $$TARGET_PID -n arp -s $$clean_ip $$MAC2 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip neigh add $$clean_ip lladdr $$MAC2 dev eth0 2>/dev/null || \
+									sudo nsenter -t $$TARGET_PID -n ip neigh replace $$clean_ip lladdr $$MAC2 dev eth0 2>/dev/null || true; \
+								fi; \
+								echo "Added ARP entry in $$target_container: $$clean_ip -> $$MAC2 (from $$c2)"; \
+							fi; \
+						fi; \
+					done; \
+				fi; \
+			done; \
+		fi; \
+	done
 
 # Copy files into containers
 copy:
