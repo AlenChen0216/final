@@ -61,12 +61,12 @@ stop: down
 # Create Open vSwitch bridge
 ovs-setup:
 
-	if ! sudo wg show wg0 >/dev/null 2>&1; then \
-		echo "Starting WireGuard interface wg0..."; \
-		sudo wg-quick up wg0; \
-	else \
-		echo "WireGuard interface wg0 is already running."; \
-	fi
+# 	if ! sudo wg show wg0 >/dev/null 2>&1; then \
+# 		echo "Starting WireGuard interface wg0..."; \
+# 		sudo wg-quick up wg0; \
+# 	else \
+# 		echo "WireGuard interface wg0 is already running."; \
+# 	fi
 
 	@for br in $(OVS_BRIDGE); do \
 		id=$${br#ovs-br}; \
@@ -86,8 +86,8 @@ ovs-setup:
 	
 
 	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=$(MTU_SIZE)
-	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=$(MTU_SIZE)
-	sudo ovs-vsctl --may-exist add-port ovs-br1 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=$(MTU_SIZE)
 
 
 
@@ -349,12 +349,12 @@ setup_onos:
 # 	onos-app 192.168.100.2 activate org.onosproject.proxyarp
 	onos-app 192.168.100.2 activate org.onosproject.fpm
 # 	onos-app 192.168.100.2 activate org.onosproject.fwd
-	onos-app 192.168.100.2 install! ./bridge-app-1.0-SNAPSHOT.oar
+# 	onos-app 192.168.100.2 install! ./bridge-app-1.0-SNAPSHOT.oar
 
 	onos-app 192.168.100.2 activate org.onosproject.route-service
 
 	# upload configurations
-# 	onos-netcfg 192.168.100.2 ./conf.json
+	onos-netcfg 192.168.100.2 ./conf_t.json
 # 	onos-app 192.168.100.2 activate org.onosproject.vrouter
 	
 	
