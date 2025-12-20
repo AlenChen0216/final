@@ -37,7 +37,9 @@ services:
     restart: always
     command: tail -f /dev/null
     privileged: true
-    network_mode: "none"
+    networks:
+      mgmt:
+        ipv4_address: 10.10.10.3
 
   ONOS:
     image: onosproject/onos:2.7-latest
@@ -49,5 +51,15 @@ services:
       - "8101:8101"
       - "2620:2620"
     privileged: true
-    network_mode: "bridge"
+    networks:
+      mgmt:
+        ipv4_address: 10.10.10.2
+
+networks:
+  mgmt:
+    name: mgmt
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
 

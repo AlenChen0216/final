@@ -17,8 +17,7 @@ CONTAINER_TO_BRIDGE += R2@ovs-br1@192.168.63.2/24,fd63::2/64@veth-r2@00:00:$(IP_
 CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64@veth-frr63@00:00:$(IP_SETTING):00:00:04
 CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.70.$(IP_SETTING)/24,fd70::$(IP_SETTING)/64@veth-frr70@00:00:$(IP_SETTING):00:00:05
 CONTAINER_TO_BRIDGE += FRR@ovs-br1@172.16.$(IP_SETTING).1/24,2a0b:4e07:c4:$(IP_SETTING)::69/64@veth-frr16@00:00:$(IP_SETTING):00:00:06
-CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.100.3/24@veth-frrmgmt@00:00:$(IP_SETTING):00:00:07
-
+# CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.100.3/24@veth-frrmgmt@00:00:$(IP_SETTING):00:00:07
 
 CONTAINER_TO_CONTAINER :=
 CONTAINER_TO_CONTAINER += H3@R2@172.17.$(IP_SETTING).2/24,2a0b:4e07:c4:1$(IP_SETTING)::2/64@172.17.$(IP_SETTING).1/24,2a0b:4e07:c4:1$(IP_SETTING)::1/64
@@ -29,12 +28,12 @@ CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 
 # 0e:a7:1a:c5:29:15 , 192.168.70.253 's mac address
 
-.PHONY: start arp-setup
+.PHONY: start
 
 # Default target: Do everything
 
 
-start: up config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
+start: up config_frr ovs-setup connect routes setup_onos start_frr check
 	
 restart: reup config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
 
@@ -61,12 +60,12 @@ stop: down
 # Create Open vSwitch bridge
 ovs-setup:
 
-# 	if ! sudo wg show wg0 >/dev/null 2>&1; then \
-# 		echo "Starting WireGuard interface wg0..."; \
-# 		sudo wg-quick up wg0; \
-# 	else \
-# 		echo "WireGuard interface wg0 is already running."; \
-# 	fi
+	if ! sudo wg show wg0 >/dev/null 2>&1; then \
+		echo "Starting WireGuard interface wg0..."; \
+		sudo wg-quick up wg0; \
+	else \
+		echo "WireGuard interface wg0 is already running."; \
+	fi
 
 	@for br in $(OVS_BRIDGE); do \
 		id=$${br#ovs-br}; \
@@ -340,21 +339,22 @@ check:
 	done
 
 setup_onos:
-	sleep 30
+	sleep 20
 	# clean up ssh key.
-	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"
+	
+	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"; \
 
 	# use onos-app to setup
 	onos-app 192.168.100.2 activate org.onosproject.openflow
-# 	onos-app 192.168.100.2 activate org.onosproject.proxyarp
 	onos-app 192.168.100.2 activate org.onosproject.fpm
-# 	onos-app 192.168.100.2 activate org.onosproject.fwd
-# 	onos-app 192.168.100.2 install! ./bridge-app-1.0-SNAPSHOT.oar
-
 	onos-app 192.168.100.2 activate org.onosproject.route-service
+	sleep 5
+	onos-app 192.168.100.2 install! proxyndp/target/proxyndp-1.0-SNAPSHOT.oar
+	onos-app 192.168.100.2 install! interdomain/target/interdomain-1.0-SNAPSHOT.oar
 
 	# upload configurations
 	onos-netcfg 192.168.100.2 ./conf_t.json
+# 	onos-netcfg 192.168.100.2 ./conf.json
 # 	onos-app 192.168.100.2 activate org.onosproject.vrouter
 	
 	
@@ -380,3 +380,7 @@ config_frr:
 start_frr:
 	docker exec -it FRR bash -c "service frr start"
 	docker exec -it R2 bash -c "service frr start"
+
+restart_frr:
+	docker exec -it FRR bash -c "service frr restart"
+	docker exec -it R2 bash -c "service frr restart"
