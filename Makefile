@@ -25,7 +25,7 @@ CONTAINER_TO_CONTAINER :=
 CONTAINER_TO_CONTAINER += H3@R2@172.17.$(IP_SETTING).2/24,2a0b:4e07:c4:1$(IP_SETTING)::2/64@172.17.$(IP_SETTING).1/24,2a0b:4e07:c4:1$(IP_SETTING)::1/64
 
 CONTAINER_DEFAULT_IF := 
-CONTAINER_DEFAULT_GW := H3:172.17.$(IP_SETTING).1,2a0b:4e07:c4:1$(IP_SETTING)::1 H1:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 H2:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69
+CONTAINER_DEFAULT_GW := H3:172.17.$(IP_SETTING).1,2a0b:4e07:c4:1$(IP_SETTING)::1 H1:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 H2:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 A1:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69 A2:172.16.$(IP_SETTING).1,2a0b:4e07:c4:$(IP_SETTING)::69
 CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 
 # 0e:a7:1a:c5:29:15 , 192.168.70.253 's mac address
@@ -35,9 +35,9 @@ CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 # Default target: Do everything
 
 
-start: up config_frr ovs-setup connect routes checksum_fix setup_onos start_frr check
+start: up config_frr ovs-setup connect routes checksum_fix disable_linklocal setup_onos start_frr check
 	
-restart: reup config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
+restart: reup config_frr ovs-setup connect routes arp-setup disable_linklocal setup_onos start_frr check
 
 # Start containers
 up:
@@ -356,25 +356,45 @@ checksum_fix:
 		echo "Fixed checksum offload in $$container."; \
 	done
 
+# Disable link-local IPv6 addresses on host containers (keep only global scope)
+HOST_CONTAINERS := H1 H2 H3 R2 FRR A1 A2
+disable_linklocal:
+	@for container in $(HOST_CONTAINERS); do \
+		echo "Disabling link-local IPv6 on $$container..."; \
+		PID=$$(docker inspect -f '{{.State.Pid}}' $$container 2>/dev/null); \
+		if [ -z "$$PID" ] || [ "$$PID" = "0" ]; then \
+			echo "Warning: $$container is not running, skipping."; \
+			continue; \
+		fi; \
+		ETH_ID=0; \
+		while sudo nsenter -t $$PID -n ip link show eth$$ETH_ID >/dev/null 2>&1; do \
+			sudo nsenter -t $$PID -n sysctl -w net.ipv6.conf.eth$$ETH_ID.addr_gen_mode=1 2>/dev/null || true; \
+			LINKLOCAL=$$(sudo nsenter -t $$PID -n ip -6 addr show dev eth$$ETH_ID scope link 2>/dev/null | grep 'inet6 fe80' | awk '{print $$2}'); \
+			for addr in $$LINKLOCAL; do \
+				sudo nsenter -t $$PID -n ip -6 addr del $$addr dev eth$$ETH_ID 2>/dev/null || true; \
+				echo "Removed link-local $$addr from $$container eth$$ETH_ID"; \
+			done; \
+			ETH_ID=$$((ETH_ID+1)); \
+		done; \
+		echo "Disabled link-local IPv6 on $$container."; \
+	done
+
 setup_onos:
 	sleep 20
 	# clean up ssh key.
 	
-	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"; \
+# 	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"
 
 	# use onos-app to setup
 	onos-app 192.168.100.2 activate org.onosproject.openflow
 	onos-app 192.168.100.2 activate org.onosproject.fpm
 	onos-app 192.168.100.2 activate org.onosproject.route-service
-	sleep 5
-	onos-netcfg 192.168.100.2 ./conf_t.json
+	sleep 0.5
+	onos-netcfg 192.168.100.2 ./conf.json
 	sleep 5
 	onos-app 192.168.100.2 install! proxyndp/target/proxyndp-1.0-SNAPSHOT.oar
 	sleep 5
 	onos-app 192.168.100.2 install! interdomain/target/interdomain-1.0-SNAPSHOT.oar
-
-# 	onos-netcfg 192.168.100.2 ./conf.json
-# 	onos-app 192.168.100.2 activate org.onosproject.vrouter
 	
 
 config_frr:

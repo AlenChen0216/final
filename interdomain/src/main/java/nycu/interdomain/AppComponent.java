@@ -32,6 +32,11 @@ import org.onlab.packet.MacAddress;
 import org.onosproject.cfg.ComponentConfigService;
 import org.onosproject.core.ApplicationId;
 import org.onosproject.core.CoreService;
+import org.onosproject.net.config.ConfigFactory;
+import org.onosproject.net.config.NetworkConfigEvent;
+import org.onosproject.net.config.NetworkConfigListener;
+import org.onosproject.net.config.NetworkConfigRegistry;
+import static org.onosproject.net.config.basics.SubjectFactories.APP_SUBJECT_FACTORY;
 import org.onosproject.net.flow.DefaultTrafficSelector;
 import org.onosproject.net.flow.DefaultTrafficTreatment;
 import org.onosproject.net.flow.TrafficSelector;
@@ -90,16 +95,18 @@ public class AppComponent {
 
     private final Logger log = LoggerFactory.getLogger(getClass());
 
-    // private final NameConfigListener cfgListener = new NameConfigListener();
-    // private final ConfigFactory<ApplicationId, nycu.interdomain.Gateway> factory
-    // =
-    // new ConfigFactory<ApplicationId, nycu.interdomain.Gateway>(
-    // APP_SUBJECT_FACTORY, nycu.interdomain.Gateway.class,
-    // "UnicastDhcpConfig") {
-    // @Override public nycu.interdomain.Gateway createConfig() {
-    // return new nycu.interdomain.Gateway();
-    // }
-    // };
+    private final ConfigFactory<ApplicationId, Gateway> factory = new ConfigFactory<ApplicationId, Gateway>(
+            APP_SUBJECT_FACTORY, Gateway.class, "interdomain") {
+        @Override
+        public Gateway createConfig() {
+            return new Gateway();
+        }
+    };
+
+    private final NetworkConfigListener cfgListener = new InternalConfigListener();
+
+    @Reference(cardinality = ReferenceCardinality.MANDATORY)
+    protected NetworkConfigRegistry cfgRegistry;
 
     @Reference(cardinality = ReferenceCardinality.MANDATORY)
     protected ComponentConfigService cfgService;
@@ -146,9 +153,12 @@ public class AppComponent {
     private List<IpAddress> peers = new ArrayList<>();
 
     private HashMap<IpAddress, ConnectPoint> gateway = new HashMap<>();
-    private static final IpPrefix INTRAPREFIX4 = IpPrefix.valueOf("172.16.23.0/24");
-    private static final IpPrefix INTRAPREFIX6 = IpPrefix.valueOf("2a0b:4e07:c4:23::/64");
-    private static final MacAddress INTRAMAC = MacAddress.valueOf("00:00:23:00:00:06");
+
+    // Configuration values loaded from config
+    private IpPrefix intraPrefix4;
+    private IpPrefix intraPrefix6;
+    private MacAddress intraMac;
+    private DeviceId blockDeviceId;
 
     private final RouteListener routeListener = event -> {
         log.info("Route event received: type={}, subject={}", event.type(), event.subject());
@@ -180,13 +190,16 @@ public class AppComponent {
     }
 
     private void blockIngress() {
-        DeviceId devId = DeviceId.deviceId("of:0000d2f4d1307942");
+        if (blockDeviceId == null) {
+            log.warn("Block device ID not configured, skipping blockIngress");
+            return;
+        }
         TrafficTreatment drop = DefaultTrafficTreatment.builder().drop().build();
-        pushRule(devId, DefaultTrafficSelector.builder()
+        pushRule(blockDeviceId, DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV4)
                 .matchIPProtocol(IPv4.PROTOCOL_TCP)
                 .build(), drop, 62000);
-        pushRule(devId, DefaultTrafficSelector.builder()
+        pushRule(blockDeviceId, DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV6)
                 .matchIPProtocol(IPv6.PROTOCOL_TCP)
                 .build(), drop, 62000);
@@ -249,6 +262,11 @@ public class AppComponent {
     @Activate
     protected void activate() {
         appId = coreService.registerApplication("nycu.interdomain");
+
+        // Register config factory
+        cfgRegistry.registerConfigFactory(factory);
+        cfgRegistry.addListener(cfgListener);
+
         routeService.addListener(routeListener);
         KryoNamespace kryo = new KryoNamespace.Builder()
                 .register(IpAddress.class, IpAddress.Version.class,
@@ -265,41 +283,93 @@ public class AppComponent {
 
         packetService.addProcessor(processor, PacketProcessor.director(2));
 
+        loadConfig();
+
+        log.info("Started");
+    }
+
+    private void loadConfig() {
+        Gateway config = cfgRegistry.getConfig(appId, Gateway.class);
+        if (config == null) {
+            log.warn("No configuration found, using defaults");
+            // Set defaults
+            intraPrefix4 = IpPrefix.valueOf("172.16.23.0/24");
+            intraPrefix6 = IpPrefix.valueOf("2a0b:4e07:c4:23::/64");
+            intraMac = MacAddress.valueOf("00:00:23:00:00:06");
+            blockDeviceId = DeviceId.deviceId("of:0000d2f4d1307942");
+            // Default gateways
+            gateway.put(IpAddress.valueOf("192.168.63.1"),
+                    new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
+            gateway.put(IpAddress.valueOf("192.168.70.23"),
+                    new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
+            gateway.put(IpAddress.valueOf("fd63::1"),
+                    new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
+            gateway.put(IpAddress.valueOf("fd70::23"),
+                    new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
+            // Default peers
+            peers.add(IpAddress.valueOf("192.168.70.253"));
+            peers.add(IpAddress.valueOf("fd70::fe"));
+            peers.add(IpAddress.valueOf("192.168.70.22"));
+            peers.add(IpAddress.valueOf("fd70::22"));
+            peers.add(IpAddress.valueOf("192.168.70.24"));
+            peers.add(IpAddress.valueOf("fd70::24"));
+            peers.add(IpAddress.valueOf("192.168.63.2"));
+            peers.add(IpAddress.valueOf("fd63::2"));
+        } else {
+            log.info("Loading configuration from network config");
+            intraPrefix4 = config.intraPrefix4();
+            intraPrefix6 = config.intraPrefix6();
+            intraMac = config.intraMac();
+            blockDeviceId = config.blockDeviceId();
+            gateway.clear();
+            gateway.putAll(config.gateways());
+            peers.clear();
+            peers.addAll(config.peers());
+        }
+
+        log.info("Config loaded: intraPrefix4={}, intraPrefix6={}, blockDeviceId={}",
+                intraPrefix4, intraPrefix6, blockDeviceId);
+        log.info("Gateways: {}", gateway);
+        log.info("Peers: {}", peers);
+
+        // Register packet requests with loaded config
         TrafficSelector selector3 = DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV4)
-                .matchIPDst(INTRAPREFIX4)
+                .matchIPDst(intraPrefix4)
                 .build();
         registerPacketRequest(selector3, PacketPriority.HIGH);
 
         TrafficSelector selector4 = DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV6)
-                .matchIPv6Dst(INTRAPREFIX6)
+                .matchIPv6Dst(intraPrefix6)
                 .build();
         registerPacketRequest(selector4, PacketPriority.HIGH);
 
         blockIngress();
-        log.info("Started");
-        gateway.put(IpAddress.valueOf("192.168.63.1"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
-        gateway.put(IpAddress.valueOf("192.168.70.23"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
-        gateway.put(IpAddress.valueOf("fd63::1"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
-        gateway.put(IpAddress.valueOf("fd70::23"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
-        peers.add(IpAddress.valueOf("192.168.70.253"));
-        peers.add(IpAddress.valueOf("fd70::fe"));
-        peers.add(IpAddress.valueOf("192.168.70.22"));
-        peers.add(IpAddress.valueOf("fd70::22"));
-        peers.add(IpAddress.valueOf("192.168.70.24"));
-        peers.add(IpAddress.valueOf("fd70::24"));
-        peers.add(IpAddress.valueOf("192.168.63.2"));
-        peers.add(IpAddress.valueOf("fd63::2"));
         bgpspeaker();
+    }
+
+    private class InternalConfigListener implements NetworkConfigListener {
+        @Override
+        public void event(NetworkConfigEvent event) {
+            if (event.configClass() == Gateway.class) {
+                switch (event.type()) {
+                    case CONFIG_ADDED:
+                    case CONFIG_UPDATED:
+                        log.info("Configuration updated, reloading...");
+                        loadConfig();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
     }
 
     @Deactivate
     protected void deactivate() {
+        cfgRegistry.removeListener(cfgListener);
+        cfgRegistry.unregisterConfigFactory(factory);
         cfgService.unregisterProperties(getClass(), false);
         routeService.removeListener(routeListener);
 
@@ -321,8 +391,9 @@ public class AppComponent {
         packetRequests.clear();
 
         // Purge flow objectives for device used in blockIngress()
-        DeviceId devId = DeviceId.deviceId("of:0000d2f4d1307942");
-        flowObjectiveService.purgeAll(devId, appId);
+        if (blockDeviceId != null) {
+            flowObjectiveService.purgeAll(blockDeviceId, appId);
+        }
 
         // Purge flow objectives for all devices used in installFlowPath()
         for (ConnectPoint cp : gateway.values()) {
@@ -376,7 +447,7 @@ public class AppComponent {
             return;
         }
 
-        IpPrefix intraPrefix = isIpv6 ? INTRAPREFIX6 : INTRAPREFIX4;
+        IpPrefix intraPrefix = isIpv6 ? intraPrefix6 : intraPrefix4;
         String ipVersion = isIpv6 ? "IPv6" : "IPv4";
 
         IpPrefix srcPrefix = srcIp.toIpPrefix();
@@ -439,8 +510,8 @@ public class AppComponent {
                 log.warn("No ARP/ND entry for inner host {}", dstIp);
                 return;
             }
-            // TODO for anycast, look up if the host is near the incoming cp.
-            MacAddress hostMac = entryMap.keySet().iterator().next();
+
+            MacAddress hostMac = findNearestMac(entryMap, cp, true);
             ConnectPoint hostCp = entryMap.get(hostMac);
 
             Pair<IpPrefix, Pair<Interface, MacAddress>> lpmResult = longestPrefixMatch(srcIp);
@@ -451,7 +522,7 @@ public class AppComponent {
             // Route exists - we have a path back to the source
 
             treatmentOutIn = DefaultTrafficTreatment.builder()
-                    .setEthSrc(INTRAMAC)
+                    .setEthSrc(intraMac)
                     .setEthDst(hostMac)
                     .build();
             selectorOutIn = buildSelector(isIpv6, srcPrefix, dstPrefix);
@@ -700,15 +771,46 @@ public class AppComponent {
         flowObjectiveService.forward(deviceId, fwd);
     }
 
-    private boolean near(ConnectPoint a, ConnectPoint b) {
-        String devA = a.deviceId().toString();
-        String devB = b.deviceId().toString();
-        String[] partsA = devA.split(":");
-        String[] partsB = devB.split(":");
-        long idA = Long.parseLong(partsA[1], 16);
-        long idB = Long.parseLong(partsB[1], 16);
-        long dist = Math.abs(idA - idB);
-        return (dist == 0);
+    private MacAddress findNearestMac(HashMap<MacAddress, ConnectPoint> entries,
+            ConnectPoint sender, boolean enableLogging) {
+        if (entries.size() == 1) {
+            return entries.keySet().iterator().next();
+        }
+
+        MacAddress nearestMac = null;
+        int minDist = Integer.MAX_VALUE;
+        for (MacAddress mac : entries.keySet()) {
+            ConnectPoint cp = entries.get(mac);
+            if (enableLogging) {
+                log.info("Compare sender " + sender + " with " + cp);
+            }
+            int dist = near(sender, cp);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestMac = mac;
+                if (enableLogging) {
+                    log.info("Update to target MAC " + nearestMac + " with distance " + minDist);
+                }
+            }
+        }
+        return nearestMac;
+    }
+
+    private int near(ConnectPoint a, ConnectPoint b) {
+        // calculate the distance between two connect points
+        if (a.deviceId().equals(b.deviceId())) {
+            return 0;
+        } else {
+            Topology topology = topologyService.currentTopology();
+            Iterable<Path> paths = topologyService.getPaths(topology, a.deviceId(), b.deviceId());
+            int minHops = Integer.MAX_VALUE;
+            for (Path p : paths) {
+                if (minHops > p.links().size()) {
+                    minHops = p.links().size();
+                }
+            }
+            return minHops;
+        }
     }
 }
 // onos-create-app
