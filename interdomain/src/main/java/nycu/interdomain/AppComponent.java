@@ -28,7 +28,6 @@ import org.onlab.packet.Ip6Address;
 import org.onlab.packet.IpAddress;
 import org.onlab.packet.IpPrefix;
 import org.onlab.packet.MacAddress;
-import org.onlab.packet.TCP;
 // import org.onlab.packet.TpPort;
 import org.onosproject.cfg.ComponentConfigService;
 import org.onosproject.core.ApplicationId;
@@ -39,6 +38,7 @@ import org.onosproject.net.flow.TrafficSelector;
 import org.onosproject.net.flow.TrafficTreatment;
 import org.onosproject.net.flowobjective.DefaultForwardingObjective;
 import org.onosproject.net.flowobjective.ForwardingObjective;
+import org.onosproject.net.host.InterfaceIpAddress;
 import org.onosproject.net.flowobjective.FlowObjectiveService;
 import org.onosproject.net.intf.Interface;
 import org.onosproject.net.intf.InterfaceService;
@@ -53,7 +53,6 @@ import org.onosproject.net.intent.MultiPointToSinglePointIntent;
 import org.onosproject.net.intent.PointToPointIntent;
 import org.onosproject.net.ConnectPoint;
 import org.onosproject.net.DeviceId;
-import org.onosproject.net.FilteredConnectPoint;
 import org.onosproject.net.PortNumber;
 import org.onosproject.net.topology.TopologyService;
 import org.onosproject.net.topology.Topology;
@@ -76,7 +75,6 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -132,7 +130,7 @@ public class AppComponent {
 
     private ApplicationId appId;
 
-    private final PacketProcessor processor = new BgpSpeaker();
+    private final PacketProcessor processor = new InterDomain();
 
     private ConsistentMap<IpAddress, HashMap<MacAddress, ConnectPoint>> arpConsistentMap;
     private Map<IpAddress, HashMap<MacAddress, ConnectPoint>> arpTable;
@@ -145,6 +143,7 @@ public class AppComponent {
     private Map<Pair<IpAddress, IpAddress>, Boolean> interPath = new HashMap<>();
 
     private List<Pair<TrafficSelector, PacketPriority>> packetRequests = new ArrayList<>();
+    private List<IpAddress> peers = new ArrayList<>();
 
     private HashMap<IpAddress, ConnectPoint> gateway = new HashMap<>();
     private static final IpPrefix INTRAPREFIX4 = IpPrefix.valueOf("172.16.23.0/24");
@@ -152,18 +151,100 @@ public class AppComponent {
     private static final MacAddress INTRAMAC = MacAddress.valueOf("00:00:23:00:00:06");
 
     private final RouteListener routeListener = event -> {
+        log.info("Route event received: type={}, subject={}", event.type(), event.subject());
         switch (event.type()) {
             case ROUTE_ADDED:
             case ROUTE_UPDATED:
+                log.info("Processing ROUTE_ADDED/UPDATED for: {}", event.subject());
                 installRoute(event.subject());
                 break;
             case ROUTE_REMOVED:
+                log.info("Route removed: {}", event.subject());
                 // withdrawRoute(event.subject());
                 break;
             default:
+                log.info("Unhandled route event type: {}", event.type());
                 break;
         }
     };
+
+    private void pushRule(DeviceId deviceId, TrafficSelector selector, TrafficTreatment treatment, int priority) {
+        ForwardingObjective fwd = DefaultForwardingObjective.builder()
+                .fromApp(appId)
+                .withSelector(selector)
+                .withTreatment(treatment)
+                .withPriority(priority)
+                .withFlag(ForwardingObjective.Flag.SPECIFIC)
+                .add();
+        flowObjectiveService.forward(deviceId, fwd);
+    }
+
+    private void blockIngress() {
+        DeviceId devId = DeviceId.deviceId("of:0000d2f4d1307942");
+        TrafficTreatment drop = DefaultTrafficTreatment.builder().drop().build();
+        pushRule(devId, DefaultTrafficSelector.builder()
+                .matchEthType(Ethernet.TYPE_IPV4)
+                .matchIPProtocol(IPv4.PROTOCOL_TCP)
+                .build(), drop, 62000);
+        pushRule(devId, DefaultTrafficSelector.builder()
+                .matchEthType(Ethernet.TYPE_IPV6)
+                .matchIPProtocol(IPv6.PROTOCOL_TCP)
+                .build(), drop, 62000);
+    }
+
+    private void bgpspeaker() {
+        log.info("Interface NUFJFF");
+        for (IpAddress gip : gateway.keySet()) {
+            for (IpAddress peer : peers) {
+                log.info("create BGP path from gip {} to peer {}", gip.toString(), peer.toString());
+                Set<Interface> intfs = interfaceService.getMatchingInterfaces(gip);
+                for (Interface intf : intfs) {
+                    List<InterfaceIpAddress> ips = intf.ipAddressesList();
+                    for (InterfaceIpAddress ipa : ips) {
+                        IpAddress ip = ipa.ipAddress();
+                        if (ip.equals(peer) && ip.version().equals(gip.version())) {
+                            // do not use intent. use "installPathIfAbsent"
+                            log.info("BGP speaker: install path from gateway {} to peer {}", gip.toString(),
+                                    peer.toString());
+                            ConnectPoint gwCp = gateway.get(gip);
+                            ConnectPoint peerCp = intf.connectPoint();
+                            IpAddress srcIp = gip;
+                            IpAddress dstIp = peer;
+                            TrafficSelector forward = null;
+                            TrafficSelector reverse = null;
+                            if (srcIp.isIp4()) {
+                                forward = DefaultTrafficSelector.builder()
+                                        .matchEthType(Ethernet.TYPE_IPV4)
+                                        .matchIPSrc(IpPrefix.valueOf(srcIp, 32))
+                                        .matchIPDst(IpPrefix.valueOf(dstIp, 32))
+                                        .build();
+                                reverse = DefaultTrafficSelector.builder()
+                                        .matchEthType(Ethernet.TYPE_IPV4)
+                                        .matchIPSrc(IpPrefix.valueOf(dstIp, 32))
+                                        .matchIPDst(IpPrefix.valueOf(srcIp, 32))
+                                        .build();
+                            } else {
+                                forward = DefaultTrafficSelector.builder()
+                                        .matchEthType(Ethernet.TYPE_IPV6)
+                                        .matchIPv6Src(IpPrefix.valueOf(srcIp, 128))
+                                        .matchIPv6Dst(IpPrefix.valueOf(dstIp, 128))
+                                        .build();
+                                reverse = DefaultTrafficSelector.builder()
+                                        .matchEthType(Ethernet.TYPE_IPV6)
+                                        .matchIPv6Src(IpPrefix.valueOf(dstIp, 128))
+                                        .matchIPv6Dst(IpPrefix.valueOf(srcIp, 128))
+                                        .build();
+                            }
+                            installPathIfAbsent(srcIp, dstIp, gwCp, peerCp, forward,
+                                    DefaultTrafficTreatment.emptyTreatment(), 64000);
+                            installPathIfAbsent(dstIp, srcIp, peerCp, gwCp, reverse,
+                                    DefaultTrafficTreatment.emptyTreatment(), 64000);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     @Activate
     protected void activate() {
@@ -184,29 +265,19 @@ public class AppComponent {
 
         packetService.addProcessor(processor, PacketProcessor.director(2));
 
-        TrafficSelector selector = DefaultTrafficSelector.builder()
-                .matchEthType(Ethernet.TYPE_IPV4)
-                .matchIPProtocol(IPv4.PROTOCOL_TCP)
-                .build();
-        registerPacketRequest(selector, PacketPriority.HIGH);
-
-        TrafficSelector selector2 = DefaultTrafficSelector.builder()
-                .matchEthType(Ethernet.TYPE_IPV6)
-                .matchIPProtocol(IPv6.PROTOCOL_TCP)
-                .build();
-        registerPacketRequest(selector2, PacketPriority.HIGH);
-
         TrafficSelector selector3 = DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV4)
                 .matchIPDst(INTRAPREFIX4)
                 .build();
-        registerPacketRequest(selector3, PacketPriority.HIGH1);
+        registerPacketRequest(selector3, PacketPriority.HIGH);
 
         TrafficSelector selector4 = DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV6)
                 .matchIPv6Dst(INTRAPREFIX6)
                 .build();
-        registerPacketRequest(selector4, PacketPriority.HIGH1);
+        registerPacketRequest(selector4, PacketPriority.HIGH);
+
+        blockIngress();
         log.info("Started");
         gateway.put(IpAddress.valueOf("192.168.63.1"),
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
@@ -216,6 +287,15 @@ public class AppComponent {
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
         gateway.put(IpAddress.valueOf("fd70::23"),
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
+        peers.add(IpAddress.valueOf("192.168.70.253"));
+        peers.add(IpAddress.valueOf("fd70::fe"));
+        peers.add(IpAddress.valueOf("192.168.70.22"));
+        peers.add(IpAddress.valueOf("fd70::22"));
+        peers.add(IpAddress.valueOf("192.168.70.24"));
+        peers.add(IpAddress.valueOf("fd70::24"));
+        peers.add(IpAddress.valueOf("192.168.63.2"));
+        peers.add(IpAddress.valueOf("fd63::2"));
+        bgpspeaker();
     }
 
     @Deactivate
@@ -240,6 +320,15 @@ public class AppComponent {
         }
         packetRequests.clear();
 
+        // Purge flow objectives for device used in blockIngress()
+        DeviceId devId = DeviceId.deviceId("of:0000d2f4d1307942");
+        flowObjectiveService.purgeAll(devId, appId);
+
+        // Purge flow objectives for all devices used in installFlowPath()
+        for (ConnectPoint cp : gateway.values()) {
+            flowObjectiveService.purgeAll(cp.deviceId(), appId);
+        }
+
         log.info("Stopped");
     }
 
@@ -251,7 +340,7 @@ public class AppComponent {
         packetService.requestPackets(selector, priority, appId);
     }
 
-    private class BgpSpeaker implements PacketProcessor {
+    private class InterDomain implements PacketProcessor {
         @Override
         public void process(PacketContext context) {
             if (context.isHandled()) {
@@ -259,7 +348,6 @@ public class AppComponent {
             }
             InboundPacket pkt = context.inPacket();
             Ethernet ethPkt = pkt.parsed();
-            TCP tcpPkt = null;
             IpAddress srcIp = null;
             IpAddress dstIp = null;
             ConnectPoint cp = pkt.receivedFrom();
@@ -267,154 +355,15 @@ public class AppComponent {
                 IPv4 ipv4Packet = (IPv4) ethPkt.getPayload();
                 srcIp = IpAddress.valueOf(ipv4Packet.getSourceAddress());
                 dstIp = IpAddress.valueOf(ipv4Packet.getDestinationAddress());
-                if (ipv4Packet.getProtocol() == IPv4.PROTOCOL_TCP) {
-                    tcpPkt = (TCP) ipv4Packet.getPayload();
-                }
             } else if (ethPkt.getEtherType() == Ethernet.TYPE_IPV6) {
                 IPv6 ipPacket = (IPv6) ethPkt.getPayload();
-                srcIp = IpAddress.valueOf(IpAddress.Version.INET6, ipPacket.getSourceAddress());
-                dstIp = IpAddress.valueOf(IpAddress.Version.INET6, ipPacket.getDestinationAddress());
-                if (ipPacket.getNextHeader() == IPv6.PROTOCOL_TCP) {
-                    tcpPkt = (TCP) ipPacket.getPayload();
-                }
-            }
-
-            // ===== For BGP Speaker =======
-            if (tcpPkt != null && (tcpPkt.getSourcePort() == 179 || tcpPkt.getDestinationPort() == 179)) {
-                // BGP packet
-                log.info("Received BGP packet from {} to {}", srcIp, dstIp);
-                // Process BGP packet here
-                for (IpAddress gwIp : gateway.keySet()) {
-                    if (dstIp.equals(gwIp)) {
-                        // Incoming BGP packet
-                        log.info("Incoming BGP packet for gateway {}", gwIp);
-                        // Build new intent combining existing ingress points (if any) with this CP
-                        Set<FilteredConnectPoint> ingress = new HashSet<>();
-                        MultiPointToSinglePointIntent existing = incomingBgp.get(gwIp);
-                        if (existing != null && existing.filteredIngressPoints() != null) {
-                            ingress.addAll(existing.filteredIngressPoints());
-                        }
-                        if (cp == null) {
-                            log.warn("Packet has no ConnectPoint; skip intent update for {}", srcIp);
-                            return;
-                        }
-                        Set<Interface> incp = interfaceService.getMatchingInterfaces(srcIp);
-                        boolean matched = false;
-                        for (Interface intf : incp) {
-                            if (intf.connectPoint().equals(cp)) {
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if (!matched) {
-                            log.warn("Ingress ConnectPoint {} does not match any interface for {}", cp, srcIp);
-                            return;
-                        }
-                        ingress.add(new FilteredConnectPoint(cp, DefaultTrafficSelector.emptySelector()));
-
-                        ConnectPoint gwConnectPoint = gateway.get(gwIp);
-                        if (gwConnectPoint == null) {
-                            log.warn("No gateway ConnectPoint configured for {}", gwIp);
-                            return;
-                        }
-                        for (FilteredConnectPoint fcp : ingress) {
-                            log.info("Ingress point: {}", fcp.connectPoint());
-                        }
-                        FilteredConnectPoint gwCp = new FilteredConnectPoint(gwConnectPoint,
-                                DefaultTrafficSelector.emptySelector());
-
-                        TrafficSelector selector = null;
-
-                        if (gwIp.isIp4()) {
-                            selector = DefaultTrafficSelector.builder()
-                                    .matchEthType(Ethernet.TYPE_IPV4)
-                                    .matchIPDst(IpPrefix.valueOf(gwIp, 32))
-                                    .build();
-                        } else {
-                            selector = DefaultTrafficSelector.builder()
-                                    .matchEthType(Ethernet.TYPE_IPV6)
-                                    .matchIPv6Dst(IpPrefix.valueOf(gwIp, 64))
-                                    .build();
-                        }
-
-                        MultiPointToSinglePointIntent intent = null;
-
-                        if (existing != null) {
-                            intent = MultiPointToSinglePointIntent.builder()
-                                    .key(existing.key())
-                                    .appId(appId)
-                                    .filteredIngressPoints(ingress)
-                                    .filteredEgressPoint(gwCp)
-                                    .selector(selector)
-                                    .priority(63000)
-                                    .build();
-                        } else {
-                            intent = MultiPointToSinglePointIntent.builder()
-                                    .appId(appId)
-                                    .filteredIngressPoints(ingress)
-                                    .filteredEgressPoint(gwCp)
-                                    .selector(selector)
-                                    .priority(63000)
-                                    .build();
-                        }
-                        log.info("Submitting intent for incoming BGP to gateway {}: {}", gwIp, intent);
-                        intentService.submit(intent);
-                        incomingBgp.put(gwIp, intent);
-
-                    } else if (srcIp.equals(gwIp) && outgoingBgp.get(gwIp) == null) {
-                        // Outgoing BGP packet
-                        log.info("Outgoing BGP packet from gateway {}", gwIp);
-
-                        ConnectPoint gwConnectPoint = gateway.get(gwIp);
-                        if (gwConnectPoint == null) {
-                            log.warn("No gateway ConnectPoint configured for {}", gwIp);
-                            return;
-                        }
-                        FilteredConnectPoint gwCp = new FilteredConnectPoint(gwConnectPoint,
-                                DefaultTrafficSelector.emptySelector());
-                        Set<FilteredConnectPoint> outPoint = new HashSet<>();
-                        Set<Interface> outCp = interfaceService.getMatchingInterfaces(dstIp);
-                        for (Interface intf : outCp) {
-                            outPoint.add(new FilteredConnectPoint(intf.connectPoint(),
-                                    DefaultTrafficSelector.emptySelector()));
-                        }
-                        if (outPoint.isEmpty()) {
-                            log.warn("No egress points found for dst {} from gateway {}", dstIp, gwIp);
-                            return;
-                        }
-
-                        TrafficSelector selector = null;
-
-                        if (gwIp.isIp4()) {
-                            selector = DefaultTrafficSelector.builder()
-                                    .matchEthType(Ethernet.TYPE_IPV4)
-                                    .matchIPSrc(IpPrefix.valueOf(gwIp, 32))
-                                    .build();
-                        } else {
-                            selector = DefaultTrafficSelector.builder()
-                                    .matchEthType(Ethernet.TYPE_IPV6)
-                                    .matchIPv6Src(IpPrefix.valueOf(gwIp, 64))
-                                    .build();
-                        }
-                        List<PointToPointIntent> intentList = new ArrayList<>();
-                        for (FilteredConnectPoint ocp : outPoint) {
-                            PointToPointIntent intent = PointToPointIntent.builder()
-                                    .appId(appId)
-                                    .filteredIngressPoint(gwCp)
-                                    .filteredEgressPoint(ocp)
-                                    .selector(selector)
-                                    .priority(63000)
-                                    .build();
-                            log.info("Submitting intent for outgoing BGP from gateway {}: {}", gwIp, intent);
-                            intentService.submit(intent);
-                            intentList.add(intent);
-                        }
-                        outgoingBgp.put(gwIp, intentList);
-                    }
-                }
+                srcIp = IpAddress.valueOf(IpAddress.Version.INET6,
+                        ipPacket.getSourceAddress());
+                dstIp = IpAddress.valueOf(IpAddress.Version.INET6,
+                        ipPacket.getDestinationAddress());
+            } else {
                 return;
             }
-            // ======================================
             interdomainProcess(ethPkt, srcIp, dstIp, cp, context);
         }
     }
@@ -428,7 +377,6 @@ public class AppComponent {
         }
 
         IpPrefix intraPrefix = isIpv6 ? INTRAPREFIX6 : INTRAPREFIX4;
-        int prefixLen = isIpv6 ? 64 : 24;
         String ipVersion = isIpv6 ? "IPv6" : "IPv4";
 
         IpPrefix srcPrefix = srcIp.toIpPrefix();
@@ -446,15 +394,27 @@ public class AppComponent {
         TrafficTreatment treatmentInOut;
         TrafficTreatment treatmentOutIn;
         ConnectPoint forwardCp;
-
+        // print arp table
+        for (IpAddress ip : arpTable.keySet()) {
+            HashMap<MacAddress, ConnectPoint> entryMap = arpTable.get(ip);
+            for (MacAddress mac : entryMap.keySet()) {
+                ConnectPoint acp = entryMap.get(mac);
+                log.info("ARP Table Entry - IP: {}, MAC: {}, ConnectPoint: {}",
+                        ip.toString(), mac.toString(), acp.toString());
+            }
+        }
         if (srcIsIntra && !dstIsIntra) {
             // Inner to outer
             log.info("Interdomain {} packet from {} to outer {}", ipVersion, srcIp, dstIp);
-            Pair<Interface, MacAddress> entry = routeTable.get(IpPrefix.valueOf(dstIp, prefixLen));
-            if (entry == null) {
-                log.warn("No {} route for outer destination {}", ipVersion, dstIp);
+            Pair<IpPrefix, Pair<Interface, MacAddress>> lpmResult = longestPrefixMatch(dstIp);
+            if (lpmResult == null) {
+                log.warn("No {} route for outer destination {} (LPM failed)", ipVersion, dstIp);
                 return;
             }
+            Pair<Interface, MacAddress> entry = lpmResult.getRight();
+            // print route entry
+            log.info("Route entry for outer destination {}: matched prefix={}, Interface={}, NextHopMac={}",
+                    dstIp, lpmResult.getLeft(), entry.getLeft().name(), entry.getRight());
 
             Interface intf = entry.getLeft();
             ConnectPoint outCp = intf.connectPoint();
@@ -469,7 +429,7 @@ public class AppComponent {
 
             forwardCp = outCp;
 
-            installPathIfAbsent(srcIp, dstIp, cp, forwardCp, selectorInOut, treatmentInOut, 63000);
+            installPathIfAbsent(srcIp, dstIp, cp, forwardCp, selectorInOut, treatmentInOut, 64000);
 
         } else if (!srcIsIntra && dstIsIntra) {
             // Outer to inner
@@ -483,11 +443,12 @@ public class AppComponent {
             MacAddress hostMac = entryMap.keySet().iterator().next();
             ConnectPoint hostCp = entryMap.get(hostMac);
 
-            Pair<Interface, MacAddress> routeEntry = routeTable.get(IpPrefix.valueOf(srcIp, prefixLen));
-            if (routeEntry == null) {
-                log.warn("No {} route entry for outer source {}", ipVersion, srcIp);
+            Pair<IpPrefix, Pair<Interface, MacAddress>> lpmResult = longestPrefixMatch(srcIp);
+            if (lpmResult == null) {
+                log.warn("No {} route entry for outer source {} (LPM failed)", ipVersion, srcIp);
                 return;
             }
+            // Route exists - we have a path back to the source
 
             treatmentOutIn = DefaultTrafficTreatment.builder()
                     .setEthSrc(INTRAMAC)
@@ -495,16 +456,17 @@ public class AppComponent {
                     .build();
             selectorOutIn = buildSelector(isIpv6, srcPrefix, dstPrefix);
 
-            installPathIfAbsent(srcIp, dstIp, cp, hostCp, selectorOutIn, treatmentOutIn, 63000);
+            installPathIfAbsent(srcIp, dstIp, cp, hostCp, selectorOutIn, treatmentOutIn, 64000);
 
         } else {
             // Transit mode (outer to outer)
             log.info("Interdomain {} transit packet from outer {} to outer {}", ipVersion, srcIp, dstIp);
-            Pair<Interface, MacAddress> entry = routeTable.get(IpPrefix.valueOf(dstIp, prefixLen));
-            if (entry == null) {
-                log.warn("No {} route entry for transit dst {}", ipVersion, dstIp);
+            Pair<IpPrefix, Pair<Interface, MacAddress>> lpmResult = longestPrefixMatch(dstIp);
+            if (lpmResult == null) {
+                log.warn("No {} route entry for transit dst {} (LPM failed)", ipVersion, dstIp);
                 return;
             }
+            Pair<Interface, MacAddress> entry = lpmResult.getRight();
 
             Interface intf = entry.getLeft();
             ConnectPoint outCp = intf.connectPoint();
@@ -517,7 +479,7 @@ public class AppComponent {
                     .build();
             selectorInOut = buildSelector(isIpv6, srcPrefix, dstPrefix);
 
-            installPathIfAbsent(srcIp, dstIp, cp, outCp, selectorInOut, treatmentInOut, 63000);
+            installPathIfAbsent(srcIp, dstIp, cp, outCp, selectorInOut, treatmentInOut, 64000);
         }
 
         context.block();
@@ -537,6 +499,32 @@ public class AppComponent {
                     .matchIPDst(dstPrefix)
                     .build();
         }
+    }
+
+    /**
+     * Perform Longest Prefix Match (LPM) lookup in the route table.
+     * Returns the route entry with the longest matching prefix for the given IP.
+     */
+    private Pair<IpPrefix, Pair<Interface, MacAddress>> longestPrefixMatch(IpAddress ip) {
+        Pair<IpPrefix, Pair<Interface, MacAddress>> bestMatch = null;
+        int longestPrefixLen = -1;
+
+        for (Map.Entry<IpPrefix, Pair<Interface, MacAddress>> entry : routeTable.entrySet()) {
+            IpPrefix prefix = entry.getKey();
+            // Check if the prefix contains the IP and has the same IP version
+            if (prefix.contains(ip) && prefix.prefixLength() > longestPrefixLen) {
+                longestPrefixLen = prefix.prefixLength();
+                bestMatch = Pair.of(prefix, entry.getValue());
+            }
+        }
+
+        if (bestMatch != null) {
+            log.debug("LPM for {}: matched prefix {}", ip, bestMatch.getLeft());
+        } else {
+            log.debug("LPM for {}: no match found", ip);
+        }
+
+        return bestMatch;
     }
 
     private void installRoute(ResolvedRoute route) {
@@ -582,7 +570,7 @@ public class AppComponent {
                     .matchEthType(Ethernet.TYPE_IPV4)
                     .matchIPDst(dst)
                     .build();
-            registerPacketRequest(selector, PacketPriority.HIGH1);
+            registerPacketRequest(selector, PacketPriority.HIGH3);
         } else {
             log.info("Installed IPv6 route to {} via {} on intf {} with next hop MAC {}",
                     dst.toString(), nextHop.toString(), intf.name(), dstMac.toString());
@@ -590,7 +578,7 @@ public class AppComponent {
                     .matchEthType(Ethernet.TYPE_IPV6)
                     .matchIPv6Dst(dst)
                     .build();
-            registerPacketRequest(selector, PacketPriority.HIGH1);
+            registerPacketRequest(selector, PacketPriority.HIGH3);
         }
     }
 

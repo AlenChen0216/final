@@ -2,3 +2,5 @@ test.txt
 /interdomain/target
 /proxyndp/target
 /.vscode
+log.txt
+/bridge-app

@@ -1,4 +1,4 @@
-CONTAINERS := H1 H3 H2 R2 FRR ONOS
+CONTAINERS := H1 H3 H2 R2 FRR ONOS A1 A2
 OVS_BRIDGE := ovs-br1 ovs-br2
 
 # You're ID for the lab.
@@ -7,7 +7,7 @@ IP_SETTING2 := 22
 IP_SETTING3 := 24
 
 # MTU setting for all interfaces
-MTU_SIZE := 1370
+MTU_SIZE := 1440
 
 CONTAINER_TO_BRIDGE :=
 CONTAINER_TO_BRIDGE += H1@ovs-br2@172.16.$(IP_SETTING).2/24,2a0b:4e07:c4:$(IP_SETTING)::2/64@veth-h1@00:00:$(IP_SETTING):00:00:01
@@ -18,6 +18,8 @@ CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.63.1/24,fd63::1/64@veth-frr63@00:00:$
 CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.70.$(IP_SETTING)/24,fd70::$(IP_SETTING)/64@veth-frr70@00:00:$(IP_SETTING):00:00:05
 CONTAINER_TO_BRIDGE += FRR@ovs-br1@172.16.$(IP_SETTING).1/24,2a0b:4e07:c4:$(IP_SETTING)::69/64@veth-frr16@00:00:$(IP_SETTING):00:00:06
 # CONTAINER_TO_BRIDGE += FRR@ovs-br1@192.168.100.3/24@veth-frrmgmt@00:00:$(IP_SETTING):00:00:07
+CONTAINER_TO_BRIDGE += A1@ovs-br1@172.16.$(IP_SETTING).88/24,2a0b:4e07:c4:$(IP_SETTING)::88/64@veth-a1@00:00:$(IP_SETTING):00:00:08
+CONTAINER_TO_BRIDGE += A2@ovs-br2@172.16.$(IP_SETTING).88/24,2a0b:4e07:c4:$(IP_SETTING)::88/64@veth-a2@00:00:$(IP_SETTING):00:00:09
 
 CONTAINER_TO_CONTAINER :=
 CONTAINER_TO_CONTAINER += H3@R2@172.17.$(IP_SETTING).2/24,2a0b:4e07:c4:1$(IP_SETTING)::2/64@172.17.$(IP_SETTING).1/24,2a0b:4e07:c4:1$(IP_SETTING)::1/64
@@ -33,7 +35,7 @@ CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 # Default target: Do everything
 
 
-start: up config_frr ovs-setup connect routes setup_onos start_frr check
+start: up config_frr ovs-setup connect routes checksum_fix setup_onos start_frr check
 	
 restart: reup config_frr ovs-setup connect routes arp-setup setup_onos start_frr check
 
@@ -338,6 +340,22 @@ check:
 		echo ""; \
 	done
 
+checksum_fix:
+	@for container in $(CONTAINERS); do \
+		echo "Fixing checksum offload in $$container..."; \
+		PID=$$(docker inspect -f '{{.State.Pid}}' $$container); \
+		if [ -z "$$PID" ] || [ "$$PID" = "0" ]; then \
+			echo "Error: $$container is not running."; \
+			continue; \
+		fi; \
+		ETH_ID=0; \
+		while sudo nsenter -t $$PID -n ip link show eth$$ETH_ID >/dev/null 2>&1; do \
+			sudo nsenter -t $$PID -n ethtool -K eth$$ETH_ID tx off rx off tso off gso off gro off lro off 2>/dev/null || true; \
+			ETH_ID=$$((ETH_ID+1)); \
+		done; \
+		echo "Fixed checksum offload in $$container."; \
+	done
+
 setup_onos:
 	sleep 20
 	# clean up ssh key.
@@ -349,15 +367,16 @@ setup_onos:
 	onos-app 192.168.100.2 activate org.onosproject.fpm
 	onos-app 192.168.100.2 activate org.onosproject.route-service
 	sleep 5
+	onos-netcfg 192.168.100.2 ./conf_t.json
+	sleep 5
 	onos-app 192.168.100.2 install! proxyndp/target/proxyndp-1.0-SNAPSHOT.oar
+	sleep 5
 	onos-app 192.168.100.2 install! interdomain/target/interdomain-1.0-SNAPSHOT.oar
 
-	# upload configurations
-	onos-netcfg 192.168.100.2 ./conf_t.json
 # 	onos-netcfg 192.168.100.2 ./conf.json
 # 	onos-app 192.168.100.2 activate org.onosproject.vrouter
 	
-	
+
 config_frr:
 	docker exec -it FRR bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
 	docker exec -it FRR bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
@@ -384,3 +403,6 @@ start_frr:
 restart_frr:
 	docker exec -it FRR bash -c "service frr restart"
 	docker exec -it R2 bash -c "service frr restart"
+
+start_FRR:
+	docker exec -it FRR bash

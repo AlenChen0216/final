@@ -144,19 +144,21 @@ public class ProxyNdp {
         // Base drops.
         pushRule(devId, DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_ARP)
-                .build(), drop, 61000);
+                .build(), drop, 62000);
         pushRule(devId, DefaultTrafficSelector.builder()
                 .matchEthType(Ethernet.TYPE_IPV6)
                 .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
-                .build(), drop, 61000);
+                .build(), drop, 62000);
 
         // Allowed ARP ICMPv6 pairs (both directions) punted to controller.
-        allowToController(devId, "192.168.70.253", "192.168.70.23", punt, 62000, 0);
-        allowToController(devId, "192.168.70.22", "192.168.70.23", punt, 62000, 0);
-        allowToController(devId, "192.168.70.24", "192.168.70.23", punt, 62000, 0);
-        allowToControllerV6(devId, "fd70::fe", "fd70::23", punt, 62000, 0);
-        allowToControllerV6(devId, "fd70::22", "fd70::23", punt, 62000, 0);
-        allowToControllerV6(devId, "fd70::24", "fd70::23", punt, 62000, 0);
+        allowToController(devId, "192.168.70.253", "192.168.70.23", punt, 63000, 0);
+        allowToController(devId2, "192.168.70.254", "192.168.70.23", punt, 63000, 0);
+        allowToController(devId, "192.168.70.22", "192.168.70.23", punt, 63000, 0);
+        allowToController(devId, "192.168.70.24", "192.168.70.23", punt, 63000, 0);
+        allowToControllerV6(devId, "fd70::fe", "fd70::23", punt, 63000, 0);
+        allowToControllerV6(devId, "fd70::ff", "fd70::23", punt, 63000, 0);
+        allowToControllerV6(devId, "fd70::22", "fd70::23", punt, 63000, 0);
+        allowToControllerV6(devId, "fd70::24", "fd70::23", punt, 63000, 0);
     }
 
     private void allowToController(DeviceId devId, String srcIp, String dstIp, TrafficTreatment punt, int priority,
@@ -229,12 +231,19 @@ public class ProxyNdp {
 
         TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
         selector.matchEthType(Ethernet.TYPE_ARP);
-        packetService.requestPackets(selector.build(), PacketPriority.HIGH, appId);
+        packetService.requestPackets(selector.build(), PacketPriority.HIGH1, appId);
 
         selector = DefaultTrafficSelector.builder();
         selector.matchEthType(Ethernet.TYPE_IPV6);
         selector.matchIPProtocol(IPv6.PROTOCOL_ICMP6);
-        packetService.requestPackets(selector.build(), PacketPriority.HIGH, appId);
+        selector.matchIcmpv6Type(ICMP6.NEIGHBOR_ADVERTISEMENT);
+        packetService.requestPackets(selector.build(), PacketPriority.HIGH1, appId);
+
+        selector = DefaultTrafficSelector.builder();
+        selector.matchEthType(Ethernet.TYPE_IPV6);
+        selector.matchIPProtocol(IPv6.PROTOCOL_ICMP6);
+        selector.matchIcmpv6Type(ICMP6.NEIGHBOR_SOLICITATION);
+        packetService.requestPackets(selector.build(), PacketPriority.HIGH1, appId);
 
         upsertArpEntry(IpAddress.valueOf("192.168.63.1"), MacAddress.valueOf("00:00:23:00:00:04"),
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
@@ -245,11 +254,6 @@ public class ProxyNdp {
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(4)));
         upsertArpEntry(IpAddress.valueOf("fd70::23"), MacAddress.valueOf("00:00:23:00:00:05"),
                 new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(5)));
-
-        upsertArpEntry(IpAddress.valueOf("172.16.23.1"), MacAddress.valueOf("00:00:23:00:00:06"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(6)));
-        upsertArpEntry(IpAddress.valueOf("2a0b:4e07:c4:23::69"), MacAddress.valueOf("00:00:23:00:00:06"),
-                new ConnectPoint(DeviceId.deviceId("of:0000000000000001"), PortNumber.portNumber(6)));
         blockIngress();
         log.info("Started");
     }
@@ -262,17 +266,32 @@ public class ProxyNdp {
         packetService.removeProcessor(processor);
         processor = null;
 
+        // Purge flow objectives for devices in bridgeTable
         for (DeviceId devId : bridgeTable.keySet()) {
             flowObjectiveService.purgeAll(devId, appId);
         }
 
+        // Purge flow objectives for devices used in blockIngress()
+        DeviceId devId1 = DeviceId.deviceId("of:0000d2f4d1307942");
+        DeviceId devId2 = DeviceId.deviceId("of:0000000000000002");
+        flowObjectiveService.purgeAll(devId1, appId);
+        flowObjectiveService.purgeAll(devId2, appId);
+
         TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
         selector.matchEthType(Ethernet.TYPE_ARP);
-        packetService.cancelPackets(selector.build(), PacketPriority.HIGH, appId);
+        packetService.cancelPackets(selector.build(), PacketPriority.HIGH1, appId);
 
         selector = DefaultTrafficSelector.builder();
         selector.matchEthType(Ethernet.TYPE_IPV6);
-        packetService.cancelPackets(selector.build(), PacketPriority.HIGH, appId);
+        selector.matchIPProtocol(IPv6.PROTOCOL_ICMP6);
+        selector.matchIcmpv6Type(ICMP6.NEIGHBOR_ADVERTISEMENT);
+        packetService.cancelPackets(selector.build(), PacketPriority.HIGH1, appId);
+
+        selector = DefaultTrafficSelector.builder();
+        selector.matchEthType(Ethernet.TYPE_IPV6);
+        selector.matchIPProtocol(IPv6.PROTOCOL_ICMP6);
+        selector.matchIcmpv6Type(ICMP6.NEIGHBOR_SOLICITATION);
+        packetService.cancelPackets(selector.build(), PacketPriority.HIGH1, appId);
 
         log.info("Stopped");
     }
@@ -316,7 +335,7 @@ public class ProxyNdp {
                     IpAddress targetIp = IpAddress.valueOf(IpAddress.Version.INET6,
                             nsPkt.getTargetAddress());
 
-                    if (arpTable.get(srcIp) == null) {
+                    if (arpTable.get(srcIp) == null || arpTable.get(srcIp).get(senderMac) == null) {
                         // log.info("Insert NDP TABLE. IP = " + srcIp + ", MAC = " + senderMac);
                         upsertArpEntry(srcIp, senderMac, pkt.receivedFrom());
                     }
@@ -347,8 +366,21 @@ public class ProxyNdp {
                             targetMac = targetNdp.keySet().iterator().next();
                         }
                         // log.info("NDP TABLE HIT. Requested MAC = " + targetMac);
-                        packetOutNdp(targetIp, targetMac, ethPkt, recDevId, recPort);
-
+                        boolean sameIntra6 = INTRAPREFIX6.contains(srcIp) && INTRAPREFIX6.contains(dstIp);
+                        if (sameIntra6) {
+                            // bridge ndp
+                            log.info("NDP SOLICITATION forwarding from " + srcIp.toString() + " to "
+                                    + targetIp.toString()
+                                    + " using Device " + recDevId.toString() +
+                                    " Port " + bridgeTable.get(recDevId).get(targetMac).toString());
+                            PortNumber dstPort = bridgeTable.get(recDevId).get(targetMac);
+                            packetOut(context, dstPort, null, null, null, null);
+                            learning(context, ethPkt.getSourceMAC(), targetMac, recDevId, dstPort, recPort);
+                            return;
+                        } else {
+                            // proxy ndp
+                            packetOutNdp(targetIp, targetMac, ethPkt, recDevId, recPort);
+                        }
                     }
                 } else if (icmp6Pkt.getIcmpType() == ICMP6.NEIGHBOR_ADVERTISEMENT) {
                     if (arpTable.get(srcIp) == null) {
@@ -382,7 +414,7 @@ public class ProxyNdp {
                 DeviceId recDevId = pkt.receivedFrom().deviceId();
                 PortNumber recPort = pkt.receivedFrom().port();
                 // sender is not in arp table
-                if (arpTable.get(senderIp) == null) {
+                if (arpTable.get(senderIp) == null || arpTable.get(senderIp).get(senderMac) == null) {
                     upsertArpEntry(senderIp, senderMac, pkt.receivedFrom());
                 }
 
@@ -414,7 +446,20 @@ public class ProxyNdp {
                             targetMac = targetEntry.keySet().iterator().next();
                         }
                         // log.info("ARP TABLE HIT. Requested MAC = " + targetMac);
-                        packetOut(context, pkt.receivedFrom().port(), targetMac, targetIp, senderMac, senderIp);
+                        boolean sameIntra4 = INTRAPREFIX4.contains(senderIp) && INTRAPREFIX4.contains(targetIp);
+                        if (sameIntra4) {
+                            // bridge arp
+                            log.info("ARP REQUEST forwarding from " + senderIp.toString() + " to " + targetIp.toString()
+                                    + " using Device " + recDevId.toString() +
+                                    " Port " + bridgeTable.get(recDevId).get(targetMac).toString());
+                            PortNumber dstPort = bridgeTable.get(recDevId).get(targetMac);
+                            packetOut(context, dstPort, null, null, null, null);
+                            learning(context, ethPkt.getSourceMAC(), targetMac, recDevId, dstPort, recPort);
+                            return;
+                        } else {
+                            // proxy arp
+                            packetOut(context, pkt.receivedFrom().port(), targetMac, targetIp, senderMac, senderIp);
+                        }
                     }
                 } else {
                     boolean sameIntra4 = INTRAPREFIX4.contains(senderIp) && INTRAPREFIX4.contains(targetIp);
@@ -598,7 +643,7 @@ public class ProxyNdp {
                 .forDevice(devId)
                 .withSelector(selector)
                 .withTreatment(treatment)
-                .withPriority(62000)
+                .withPriority(64000)
                 .fromApp(appId)
                 .makeTemporary(60)
                 .build();
@@ -615,7 +660,7 @@ public class ProxyNdp {
                 .forDevice(devId)
                 .withSelector(reverseSelector)
                 .withTreatment(reverseTreatment)
-                .withPriority(62000)
+                .withPriority(64000)
                 .fromApp(appId)
                 .makeTemporary(60)
                 .build();

@@ -22,7 +22,20 @@ services:
     command: tail -f /dev/null
     privileged: true
     network_mode: "none"
-
+  A1:
+    image: nicolaka/netshoot:latest
+    container_name: A1
+    restart: always
+    command: tail -f /dev/null
+    privileged: true
+    network_mode: "none"
+  A2:
+    image: nicolaka/netshoot:latest
+    container_name: A2
+    restart: always
+    command: tail -f /dev/null
+    privileged: true
+    network_mode: "none"
   R2:
     image: frrouting/frr-debian:latest
     container_name: R2
