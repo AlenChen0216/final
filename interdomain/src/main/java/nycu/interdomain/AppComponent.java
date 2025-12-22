@@ -43,7 +43,6 @@ import org.onosproject.net.flow.TrafficSelector;
 import org.onosproject.net.flow.TrafficTreatment;
 import org.onosproject.net.flowobjective.DefaultForwardingObjective;
 import org.onosproject.net.flowobjective.ForwardingObjective;
-import org.onosproject.net.host.InterfaceIpAddress;
 import org.onosproject.net.flowobjective.FlowObjectiveService;
 import org.onosproject.net.intf.Interface;
 import org.onosproject.net.intf.InterfaceService;
@@ -55,9 +54,11 @@ import org.onosproject.net.packet.PacketService;
 // import org.onosproject.net.packet.PacketPriority;
 import org.onosproject.net.intent.IntentService;
 import org.onosproject.net.intent.MultiPointToSinglePointIntent;
+import org.onosproject.net.intent.SinglePointToMultiPointIntent;
 import org.onosproject.net.intent.PointToPointIntent;
 import org.onosproject.net.ConnectPoint;
 import org.onosproject.net.DeviceId;
+import org.onosproject.net.FilteredConnectPoint;
 import org.onosproject.net.PortNumber;
 import org.onosproject.net.topology.TopologyService;
 import org.onosproject.net.topology.Topology;
@@ -80,6 +81,7 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -206,55 +208,77 @@ public class AppComponent {
     }
 
     private void bgpspeaker() {
-        log.info("Interface NUFJFF");
+        log.info("Setting up BGP speaker intents");
         for (IpAddress gip : gateway.keySet()) {
-            for (IpAddress peer : peers) {
-                log.info("create BGP path from gip {} to peer {}", gip.toString(), peer.toString());
-                Set<Interface> intfs = interfaceService.getMatchingInterfaces(gip);
-                for (Interface intf : intfs) {
-                    List<InterfaceIpAddress> ips = intf.ipAddressesList();
-                    for (InterfaceIpAddress ipa : ips) {
-                        IpAddress ip = ipa.ipAddress();
-                        if (ip.equals(peer) && ip.version().equals(gip.version())) {
-                            // do not use intent. use "installPathIfAbsent"
-                            log.info("BGP speaker: install path from gateway {} to peer {}", gip.toString(),
-                                    peer.toString());
-                            ConnectPoint gwCp = gateway.get(gip);
-                            ConnectPoint peerCp = intf.connectPoint();
-                            IpAddress srcIp = gip;
-                            IpAddress dstIp = peer;
-                            TrafficSelector forward = null;
-                            TrafficSelector reverse = null;
-                            if (srcIp.isIp4()) {
-                                forward = DefaultTrafficSelector.builder()
-                                        .matchEthType(Ethernet.TYPE_IPV4)
-                                        .matchIPSrc(IpPrefix.valueOf(srcIp, 32))
-                                        .matchIPDst(IpPrefix.valueOf(dstIp, 32))
-                                        .build();
-                                reverse = DefaultTrafficSelector.builder()
-                                        .matchEthType(Ethernet.TYPE_IPV4)
-                                        .matchIPSrc(IpPrefix.valueOf(dstIp, 32))
-                                        .matchIPDst(IpPrefix.valueOf(srcIp, 32))
-                                        .build();
-                            } else {
-                                forward = DefaultTrafficSelector.builder()
-                                        .matchEthType(Ethernet.TYPE_IPV6)
-                                        .matchIPv6Src(IpPrefix.valueOf(srcIp, 128))
-                                        .matchIPv6Dst(IpPrefix.valueOf(dstIp, 128))
-                                        .build();
-                                reverse = DefaultTrafficSelector.builder()
-                                        .matchEthType(Ethernet.TYPE_IPV6)
-                                        .matchIPv6Src(IpPrefix.valueOf(dstIp, 128))
-                                        .matchIPv6Dst(IpPrefix.valueOf(srcIp, 128))
-                                        .build();
-                            }
-                            installPathIfAbsent(srcIp, dstIp, gwCp, peerCp, forward,
-                                    DefaultTrafficTreatment.emptyTreatment(), 64000);
-                            installPathIfAbsent(dstIp, srcIp, peerCp, gwCp, reverse,
-                                    DefaultTrafficTreatment.emptyTreatment(), 64000);
-                        }
-                    }
+            ConnectPoint gwCp = gateway.get(gip);
+            if (gwCp == null) {
+                log.warn("Gateway connect point is null for {}, skipping", gip);
+                continue;
+            }
+
+            Set<Interface> intfs = interfaceService.getMatchingInterfaces(gip);
+            if (intfs == null || intfs.isEmpty()) {
+                log.warn("No matching interfaces found for gateway {}, skipping", gip);
+                continue;
+            }
+
+            Set<FilteredConnectPoint> fcps = new HashSet<>();
+            for (Interface intf : intfs) {
+                if (intf.connectPoint() != null) {
+                    fcps.add(new FilteredConnectPoint(intf.connectPoint()));
+                    log.info("Interface for gateway {}: {}", gip, intf.name());
                 }
+            }
+
+            if (fcps.isEmpty()) {
+                log.warn("No valid connect points found for gateway {}, skipping intent creation", gip);
+                continue;
+            }
+
+            TrafficSelector forward;
+            TrafficSelector rev;
+            if (gip.isIp4()) {
+                forward = DefaultTrafficSelector.builder()
+                        .matchEthType(Ethernet.TYPE_IPV4)
+                        .matchIPSrc(gip.toIpPrefix())
+                        .build();
+                rev = DefaultTrafficSelector.builder()
+                        .matchEthType(Ethernet.TYPE_IPV4)
+                        .matchIPDst(gip.toIpPrefix())
+                        .build();
+            } else {
+                forward = DefaultTrafficSelector.builder()
+                        .matchEthType(Ethernet.TYPE_IPV6)
+                        .matchIPv6Src(gip.toIpPrefix())
+                        .build();
+                rev = DefaultTrafficSelector.builder()
+                        .matchEthType(Ethernet.TYPE_IPV6)
+                        .matchIPv6Dst(gip.toIpPrefix())
+                        .build();
+            }
+
+            try {
+                SinglePointToMultiPointIntent intent = SinglePointToMultiPointIntent.builder()
+                        .appId(appId)
+                        .selector(forward)
+                        .filteredIngressPoint(new FilteredConnectPoint(gwCp))
+                        .filteredEgressPoints(fcps)
+                        .priority(65000)
+                        .build();
+                MultiPointToSinglePointIntent reverse = MultiPointToSinglePointIntent.builder()
+                        .appId(appId)
+                        .selector(rev)
+                        .filteredIngressPoints(fcps)
+                        .filteredEgressPoint(new FilteredConnectPoint(gwCp))
+                        .priority(65000)
+                        .build();
+                log.info("Submitting intents for gateway {}", gip);
+                log.info("SP2MP intent: ingress={}, egress count={}", gwCp, fcps.size());
+                log.info("MP2SP intent: ingress count={}, egress={}", fcps.size(), gwCp);
+                intentService.submit(intent);
+                intentService.submit(reverse);
+            } catch (Exception e) {
+                log.error("Failed to create/submit intents for gateway {}: {}", gip, e.getMessage());
             }
         }
     }
@@ -706,7 +730,6 @@ public class AppComponent {
                     .setOutput(dstCp.port())
                     .build();
             TrafficSelector sel = DefaultTrafficSelector.builder(selector)
-                    .matchInPort(srcCp.port())
                     .build();
             applyFlow(srcCp.deviceId(), sel, treatment, priority);
             return;
@@ -731,7 +754,6 @@ public class AppComponent {
                 .setOutput(firstLink.src().port())
                 .build();
         TrafficSelector firstSelector = DefaultTrafficSelector.builder(selector)
-                .matchInPort(srcCp.port())
                 .build();
         applyFlow(srcCp.deviceId(), firstSelector, firstTreatment, priority);
 

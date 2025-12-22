@@ -90,8 +90,6 @@ ovs-setup:
 	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=$(MTU_SIZE)
 	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=$(MTU_SIZE)
 
-
-
 	sudo ip link add veth-local type veth peer name veth-peer
 
 	sudo ovs-vsctl --may-exist add-port ovs-br2 veth-local -- set interface veth-local mtu_request=$(MTU_SIZE)
@@ -383,7 +381,7 @@ setup_onos:
 	sleep 20
 	# clean up ssh key.
 	
-# 	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"
+	ssh-keygen -f "/home/alen/.ssh/known_hosts" -R "[192.168.100.2]:8101"
 
 	# use onos-app to setup
 	onos-app 192.168.100.2 activate org.onosproject.openflow
@@ -409,16 +407,40 @@ config_frr:
 
 	docker exec -it R2 bash -c "echo 'net.ipv4.ip_forward=1' > /etc/sysctl.conf"
 	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv6.conf.default.forwarding=1' >> /etc/sysctl.conf"
 	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.disable_ipv6=0' >> /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv6.conf.all.accept_ra=0' >> /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv4.conf.all.rp_filter=0' >> /etc/sysctl.conf"
+	docker exec -it R2 bash -c "echo 'net.ipv4.conf.default.rp_filter=0' >> /etc/sysctl.conf"
 
 	docker exec -it R2 bash -c "sysctl -p"
 	docker cp ./daemons R2:/etc/frr/daemons
 	docker cp ./R2.conf R2:/etc/frr/frr.conf
 	docker restart R2
 
+# Apply sysctl after restart (settings may be lost after container restart)
+post_frr_sysctl:
+	docker exec -it FRR bash -c "sysctl -w net.ipv4.ip_forward=1"
+	docker exec -it FRR bash -c "sysctl -w net.ipv6.conf.all.forwarding=1"
+	docker exec -it FRR bash -c "sysctl -w net.ipv6.conf.all.disable_ipv6=0"
+	docker exec -it R2 bash -c "sysctl -w net.ipv4.ip_forward=1"
+	docker exec -it R2 bash -c "sysctl -w net.ipv6.conf.all.forwarding=1"
+	docker exec -it R2 bash -c "sysctl -w net.ipv6.conf.default.forwarding=1"
+	docker exec -it R2 bash -c "sysctl -w net.ipv6.conf.all.disable_ipv6=0"
+	docker exec -it R2 bash -c "sysctl -w net.ipv6.conf.all.accept_ra=0"
+	docker exec -it R2 bash -c "sysctl -w net.ipv4.conf.all.rp_filter=0"
+	docker exec -it R2 bash -c "sysctl -w net.ipv4.conf.default.rp_filter=0"
+	# Enable forwarding on each interface
+	docker exec -it R2 bash -c "for iface in \$$(ls /sys/class/net/); do sysctl -w net.ipv6.conf.\$$iface.forwarding=1 2>/dev/null || true; done"
+
 start_frr:
 	docker exec -it FRR bash -c "service frr start"
 	docker exec -it R2 bash -c "service frr start"
+	# Re-apply forwarding settings after FRR starts
+	docker exec -it R2 bash -c "sysctl -w net.ipv4.ip_forward=1"
+	docker exec -it R2 bash -c "sysctl -w net.ipv6.conf.all.forwarding=1"
+	docker exec -it R2 bash -c "sysctl -w net.ipv4.conf.all.rp_filter=0"
+	docker exec -it R2 bash -c "for iface in \$$(ls /sys/class/net/); do sysctl -w net.ipv6.conf.\$$iface.forwarding=1 2>/dev/null || true; done"
 
 restart_frr:
 	docker exec -it FRR bash -c "service frr restart"
