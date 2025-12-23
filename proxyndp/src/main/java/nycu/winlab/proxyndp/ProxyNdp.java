@@ -28,6 +28,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.crypto.Mac;
+
 import org.onosproject.core.ApplicationId;
 import org.onosproject.core.CoreService;
 import org.onosproject.net.config.ConfigFactory;
@@ -142,6 +144,7 @@ public class ProxyNdp {
     // Distributed ARP/NDP tables (shared across instances/apps if needed)
     private ConsistentMap<IpAddress, HashMap<MacAddress, ConnectPoint>> arpConsistentMap;
     private Map<IpAddress, HashMap<MacAddress, ConnectPoint>> arpTable;
+    private Map<IpAddress, HashMap<MacAddress, ConnectPoint>> hardTable = new HashMap<>();
     private Map<DeviceId, HashMap<MacAddress, PortNumber>> bridgeTable = new HashMap<>();
 
     // Configuration values loaded from config
@@ -167,6 +170,7 @@ public class ProxyNdp {
             log.warn("blockDeviceId not configured, skipping blockIngress");
             return;
         }
+        DeviceId dev2 = DeviceId.deviceId("of:0000000000000002");
         TrafficTreatment drop = DefaultTrafficTreatment.builder().drop().build();
         TrafficTreatment punt = DefaultTrafficTreatment.builder().setOutput(PortNumber.CONTROLLER).build();
 
@@ -178,6 +182,38 @@ public class ProxyNdp {
                 .matchEthType(Ethernet.TYPE_IPV6)
                 .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
                 .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("3"))
+                .matchEthType(Ethernet.TYPE_ARP)
+                .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("3"))
+                .matchEthType(Ethernet.TYPE_IPV6)
+                .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
+                .matchIcmpv6Type(ICMP6.NEIGHBOR_SOLICITATION)
+                .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("3"))
+                .matchEthType(Ethernet.TYPE_IPV6)
+                .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
+                .matchIcmpv6Type(ICMP6.NEIGHBOR_ADVERTISEMENT)
+                .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("4"))
+                .matchEthType(Ethernet.TYPE_ARP)
+                .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("4"))
+                .matchEthType(Ethernet.TYPE_IPV6)
+                .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
+                .matchIcmpv6Type(ICMP6.NEIGHBOR_SOLICITATION)
+                .build(), drop, 62000);
+        pushRule(dev2, DefaultTrafficSelector.builder()
+                .matchInPort(PortNumber.portNumber("4"))
+                .matchEthType(Ethernet.TYPE_IPV6)
+                .matchIPProtocol(IPv6.PROTOCOL_ICMP6)
+                .matchIcmpv6Type(ICMP6.NEIGHBOR_ADVERTISEMENT)
+                .build(), drop, 62000);
 
         // Load allowed ARP pairs from config
         Gateway config = cfgRegistry.getConfig(appId, Gateway.class);
@@ -188,6 +224,11 @@ public class ProxyNdp {
             for (Gateway.IpPair pair : config.allowedNdpPairs()) {
                 allowToControllerV6(blockDeviceId, pair.srcIp(), pair.dstIp(), punt, 63000, 0);
             }
+            //TODO need to change the ip.
+            allowToController(dev2, "192.168.70.22", "192.168.70.23", punt, 63000, 3);
+            allowToController(dev2, "192.168.70.24", "192.168.70.23", punt, 63000, 4);
+            allowToControllerV6(dev2, "fd70::22", "fd70::23", punt, 63000, 3);
+            allowToControllerV6(dev2, "fd70::24", "fd70::23", punt, 63000, 4);
         } else {
             // Default values if no config
             allowToController(blockDeviceId, "192.168.70.253", "192.168.70.23", punt, 63000, 0);
@@ -323,6 +364,13 @@ public class ProxyNdp {
             // Load pre-add ARP entries from config
             for (Gateway.ArpEntry entry : config.preAddArpEntries()) {
                 upsertArpEntry(entry.ip(), entry.mac(), entry.connectPoint());
+                HashMap<MacAddress, ConnectPoint> currentEntry = hardTable.get(entry.ip());
+                if (currentEntry == null) {
+                    currentEntry = new HashMap<>();
+                    hardTable.put(entry.ip(), currentEntry);
+                }
+                currentEntry.put(entry.mac(), entry.connectPoint());
+                hardTable.put(entry.ip(), currentEntry);
             }
         }
 
@@ -462,7 +510,7 @@ public class ProxyNdp {
             }
 
             HashMap<MacAddress, ConnectPoint> targetNdp = arpTable.get(targetIp);
-            log.info("Bridge Table : " + bridgeTable);
+            // log.info("Bridge Table : " + bridgeTable);
             if (targetNdp == null || targetNdp.isEmpty()) {
                 log.info("INTRAPREFIX NDP MISS. Flood NDP SOLICITATION for " + targetIp +
                         " Device = " + recDevId + " Port = " + recPort);
@@ -531,8 +579,8 @@ public class ProxyNdp {
         short op = arpPkt.getOpCode();
 
         if (bridgeTable.get(recDevId).get(senderMac) == null) {
-            log.info("Insert BRIDGE TABLE. MAC = " + senderMac + ", Port = " + recPort,
-                    " Device = " + recDevId);
+            // log.info("Insert BRIDGE TABLE. MAC = " + senderMac + ", Port = " + recPort,
+            //         " Device = " + recDevId);
             bridgeTable.get(recDevId).put(senderMac, recPort);
         }
 
@@ -597,7 +645,7 @@ public class ProxyNdp {
             }
         }
         if (dstPort == null || !sameIntra) {
-            log.info("Bridge Table : " + bridgeTable);
+            // log.info("Bridge Table : " + bridgeTable);
             flood(context);
         } else {
             log.info("ARP REPLY forwarding from " + senderIp + " to " + targetIp +
@@ -615,6 +663,21 @@ public class ProxyNdp {
 
     private boolean updateArpTableAndCheckNewMac(IpAddress ip, MacAddress mac, ConnectPoint cp) {
         HashMap<MacAddress, ConnectPoint> entry = arpTable.get(ip);
+        HashMap<MacAddress, ConnectPoint> hardEntry = hardTable.get(ip);
+        if (hardEntry != null) {
+            boolean found = false;
+            for (MacAddress hardMac : hardEntry.keySet()) {
+                if (hardMac.equals(mac)) {
+                    found = true;
+                } else {
+                    purgeArpEntry(ip, hardMac);
+                }
+            }
+            if (!found) {
+                log.info("HARD ARP ENTRY VIOLATION for IP " + ip + ". Purge and ignore.");
+                return true;
+            }
+        }
         if (entry == null) {
             upsertArpEntry(ip, mac, cp);
             return false;
@@ -649,19 +712,6 @@ public class ProxyNdp {
         }
         return nearestMac;
     }
-
-    private void printBridgeTable() {
-        log.info("Bridge Table:");
-        for (DeviceId devId : bridgeTable.keySet()) {
-            log.info(" Device: " + devId.toString());
-            HashMap<MacAddress, PortNumber> table = bridgeTable.get(devId);
-            for (MacAddress mac : table.keySet()) {
-                PortNumber port = table.get(mac);
-                log.info("  MAC: " + mac.toString() + " -> Port: " + port.toString());
-            }
-        }
-    }
-
     private int near(ConnectPoint a, ConnectPoint b) {
         // calculate the distance between two connect points
         if (a.deviceId().equals(b.deviceId())) {
@@ -677,6 +727,10 @@ public class ProxyNdp {
             }
             return minHops;
         }
+    }
+
+    private void purgeArpEntry(IpAddress ip, MacAddress mac) {
+        arpTable.get(ip).remove(mac);
     }
 
     private void upsertArpEntry(IpAddress ip, MacAddress mac, ConnectPoint cp) {

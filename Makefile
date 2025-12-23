@@ -35,7 +35,7 @@ CONTAINER_DEFAULT_GW += R2:192.168.63.1,fd63::1
 # Default target: Do everything
 
 
-start: up config_frr ovs-setup connect routes checksum_fix disable_linklocal setup_onos start_frr check
+start: up config_frr ovs-setup connect routes checksum_fix disable_linklocal start_frr setup_onos check
 	
 restart: reup config_frr ovs-setup connect routes arp-setup disable_linklocal setup_onos start_frr check
 
@@ -86,9 +86,9 @@ ovs-setup:
 	sudo ovs-vsctl --may-exist add-port ovs-br2 patch-br1 -- set interface patch-br1 type=patch options:peer=patch-br2
 	
 
-	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN mtu_request=$(MTU_SIZE)
-	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 mtu_request=$(MTU_SIZE)
-	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN -- set interface TO_VXLAN type=vxlan options:remote_ip=192.168.60.$(IP_SETTING) -- set interface TO_VXLAN options:mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN2 -- set interface TO_VXLAN2 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING2) -- set interface TO_VXLAN2 options:mtu_request=$(MTU_SIZE)
+	sudo ovs-vsctl --may-exist add-port ovs-br2 TO_VXLAN3 -- set interface TO_VXLAN3 type=vxlan options:remote_ip=192.168.60.$(IP_SETTING3) -- set interface TO_VXLAN3 options:mtu_request=$(MTU_SIZE)
 
 	sudo ip link add veth-local type veth peer name veth-peer
 
@@ -385,13 +385,14 @@ setup_onos:
 
 	# use onos-app to setup
 	onos-app 192.168.100.2 activate org.onosproject.openflow
+	sleep 10
+	onos-netcfg 192.168.100.2 ./conf.json
+	sleep 10
+	onos-app 192.168.100.2 install! proxyndp/target/proxyndp-1.0-SNAPSHOT.oar
+	sleep 20
 	onos-app 192.168.100.2 activate org.onosproject.fpm
 	onos-app 192.168.100.2 activate org.onosproject.route-service
-	sleep 0.5
-	onos-netcfg 192.168.100.2 ./conf.json
-	sleep 5
-	onos-app 192.168.100.2 install! proxyndp/target/proxyndp-1.0-SNAPSHOT.oar
-	sleep 5
+	sleep 10
 	onos-app 192.168.100.2 install! interdomain/target/interdomain-1.0-SNAPSHOT.oar
 	
 

@@ -221,7 +221,7 @@ public class AppComponent {
                 log.warn("No matching interfaces found for gateway {}, skipping", gip);
                 continue;
             }
-
+            List<IpPrefix> peerPrefixes = new ArrayList<>();
             Set<FilteredConnectPoint> fcps = new HashSet<>();
             for (Interface intf : intfs) {
                 if (intf.connectPoint() != null) {
@@ -265,18 +265,18 @@ public class AppComponent {
                         .filteredEgressPoints(fcps)
                         .priority(65000)
                         .build();
-                MultiPointToSinglePointIntent reverse = MultiPointToSinglePointIntent.builder()
+                PointToPointIntent reverse1 = PointToPointIntent.builder()
                         .appId(appId)
                         .selector(rev)
-                        .filteredIngressPoints(fcps)
-                        .filteredEgressPoint(new FilteredConnectPoint(gwCp))
+                        .filteredIngressPoint(new FilteredConnectPoint(gwCp))
+                        .filteredEgressPoint(fcps.iterator().next()) // For simplicity, using one egress point
                         .priority(65000)
                         .build();
                 log.info("Submitting intents for gateway {}", gip);
                 log.info("SP2MP intent: ingress={}, egress count={}", gwCp, fcps.size());
                 log.info("MP2SP intent: ingress count={}, egress={}", fcps.size(), gwCp);
                 intentService.submit(intent);
-                intentService.submit(reverse);
+                // intentService.submit(reverse);
             } catch (Exception e) {
                 log.error("Failed to create/submit intents for gateway {}: {}", gip, e.getMessage());
             }
@@ -480,7 +480,7 @@ public class AppComponent {
         boolean dstIsIntra = intraPrefix.contains(dstPrefix);
 
         if (srcIsIntra && dstIsIntra) {
-            log.info("Ignore intradomain {} packet from {} to {}", ipVersion, srcIp, dstIp);
+            // log.info("Ignore intradomain {} packet from {} to {}", ipVersion, srcIp, dstIp);
             return;
         }
 
@@ -544,7 +544,9 @@ public class AppComponent {
                 return;
             }
             // Route exists - we have a path back to the source
-
+            log.info("Route entry for outer source {}: matched prefix={}, Interface={}, NextHopMac={}",
+                    srcIp, lpmResult.getLeft(), lpmResult.getRight().getLeft().name(),
+                    lpmResult.getRight().getRight());
             treatmentOutIn = DefaultTrafficTreatment.builder()
                     .setEthSrc(intraMac)
                     .setEthDst(hostMac)
@@ -567,7 +569,8 @@ public class AppComponent {
             ConnectPoint outCp = intf.connectPoint();
             MacAddress nextHopMac = entry.getRight();
             MacAddress routerMac = intf.mac();
-
+            log.info("Route entry for transit dst {}: matched prefix={}, Interface={}, NextHopMac={}",
+                    dstIp, lpmResult.getLeft(), intf.name(), nextHopMac);
             treatmentInOut = DefaultTrafficTreatment.builder()
                     .setEthSrc(routerMac)
                     .setEthDst(nextHopMac)
@@ -625,17 +628,17 @@ public class AppComponent {
     private void installRoute(ResolvedRoute route) {
         IpPrefix dst = route.prefix();
         IpAddress nextHop = route.nextHop();
-        log.info("Insert route to {} via {} into routing tableRRR", dst, nextHop);
+        log.info("Insert route to {} via {} into routing table", dst, nextHop);
 
         // Tested : print ip, mac, and cp in arp table.
-        for (IpAddress ip : arpTable.keySet()) {
-            HashMap<MacAddress, ConnectPoint> entry = arpTable.get(ip);
-            for (MacAddress mac : entry.keySet()) {
-                ConnectPoint cp = entry.get(mac);
-                log.info("ARP Entry - IP: {}, MAC: {}, CP: {}", ip.toString(),
-                        mac.toString(), cp.toString());
-            }
-        }
+        // for (IpAddress ip : arpTable.keySet()) {
+        //     HashMap<MacAddress, ConnectPoint> entry = arpTable.get(ip);
+        //     for (MacAddress mac : entry.keySet()) {
+        //         ConnectPoint cp = entry.get(mac);
+        //         log.info("ARP Entry - IP: {}, MAC: {}, CP: {}", ip.toString(),
+        //                 mac.toString(), cp.toString());
+        //     }
+        // }
 
         Interface intf = interfaceService.getMatchingInterface(nextHop);
         if (intf == null) {
